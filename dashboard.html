@@ -514,6 +514,19 @@ body.right-panel-open .notice-stack{right:354px}
   .tabs button{font-size:9px}
   .left,.right{max-height:50vh}
 }
+
+/* 军事操作与地图同时可见，退出军事后恢复原布局。 */
+#militaryModal{left:auto;width:360px;border-left:1px solid var(--line)}
+#militaryModal .modal-card{padding:16px 14px 28px}
+#militaryModal .mil-grid{grid-template-columns:1fr}
+#militaryModal .mil-buttons button{font-size:12px;min-height:36px;padding:6px 10px}
+body.military-open .app{padding-right:360px}
+body.military-open #worldLeft,body.military-open #worldRight,
+body.military-open #leftReopen,body.military-open #rightReopen{display:none!important}
+@media(max-width:760px){
+  #militaryModal{left:0;right:0;top:46%;bottom:56px;width:auto;border-top:1px solid var(--line)}
+  body.military-open .app{padding-right:0;height:46%}
+}
 </style>
 </head>
 <body>
@@ -672,11 +685,7 @@ body.right-panel-open .notice-stack{right:354px}
   <div class="modal-card">
     <div class="modal-head">
       <div><div class="deck-crumb">指挥台 / 军事</div><h2>军事与战争</h2><p id="militarySubtitle">常备军、边境战与战争疲劳</p></div>
-      <div class="deck-head-actions"><button id="militaryCloseBtn">返回世界</button></div>
-    </div>
-    <div class="deck-tabs" id="militaryTabs">
-      <button data-mil-filter="army" class="on">军队</button>
-      <button data-mil-filter="war">战争</button>
+      <div class="deck-head-actions"><button id="militaryCloseBtn">收起军事栏</button></div>
     </div>
     <div id="militaryBody"></div>
   </div>
@@ -1728,6 +1737,7 @@ async function poll(force=false){
     const r=await fetch('/api/state',{cache:'no-store'});if(!r.ok)throw new Error('state');
     STATE=await r.json();
     syncDiaryBubbles();syncNoticeBubbles();
+    if(!$('militaryModal').hidden&&militaryStateKey!==JSON.stringify(STATE.countries[selectedCountry]))renderMilitary();
     if(!$('notifyModal').hidden)renderNotifyProjects();
     if(!$('nationModal').hidden){renderNationCities();renderNationRanking();}
     if(force===true){
@@ -1804,6 +1814,7 @@ function cityAtScreen(clientX,clientY){
   return best;
 }
 canvas.addEventListener('dblclick',async e=>{
+  if(!$('militaryModal').hidden)return;
   const hit=cityAtScreen(e.clientX,e.clientY);
   if(!hit)return;
   selectedCountry=hit.cid;
@@ -1828,7 +1839,7 @@ canvas.addEventListener('pointermove',e=>{
 canvas.addEventListener('pointerup',e=>{
   if(!drag)return;const wasMoved=moved;
   drag=null;canvas.classList.remove('drag');
-  if(!wasMoved){const near=nearestTile(e.clientX,e.clientY);if(near){selectedTile=near;renderRight();render(true);showDetailTab();}}
+  if(!wasMoved){const near=nearestTile(e.clientX,e.clientY);if(near){selectedTile=near;render(true);if(!$('militaryModal').hidden){militaryTarget=dynamicOwnerMap()[near.join(',')]||null;renderMilitary();}else{renderRight();showDetailTab();}}}
   try{canvas.releasePointerCapture(e.pointerId);}catch(_){}
 });
 canvas.addEventListener('pointerleave',()=>{if(!drag)$('hoverCard').style.display='none';});
@@ -2043,7 +2054,7 @@ $('techModal').onclick=e=>{if(e.target===$('techModal'))closeDeck('tech');};
 $('diploCloseBtn').onclick=()=>closeDeck('diplo');
 $('diploModal').onclick=e=>{if(e.target===$('diploModal'))closeDeck('diplo');};
 $('militaryCloseBtn').onclick=()=>closeDeck('military');
-$('militaryModal').onclick=e=>{if(e.target===$('militaryModal'))closeDeck('military');};
+
 $('cityCloseBtn').onclick=()=>closeDeck('city');
 $('cityModal').onclick=e=>{if(e.target===$('cityModal'))closeDeck('city');};
 $('agentsClose').onclick=()=>closeDeck('ai');
@@ -2090,7 +2101,7 @@ async function openDeck(name){
   else if(name==='system')await openPauseMenu();
 }
 
-let nationTab='overview',diploFilter='relations',militaryFilter='army',techFilter='all';
+let nationTab='overview',diploFilter='relations',techFilter='all';
 function openNationDeck(){
   if(!STATE)return;
   const panel=$('panel-country'),host=$('nationOverview');
@@ -2225,11 +2236,6 @@ for(const b of document.querySelectorAll('#diploTabs [data-diplo-filter]'))b.onc
   const name=b.dataset.diploFilter;diploFilter=name;
   for(const x of document.querySelectorAll('#diploTabs button'))x.classList.toggle('on',x===b);
   for(const sec of document.querySelectorAll('#diploBody [data-diplo-section]'))sec.hidden=sec.dataset.diploSection!==name;
-};
-for(const b of document.querySelectorAll('#militaryTabs [data-mil-filter]'))b.onclick=()=>{
-  const name=b.dataset.milFilter;militaryFilter=name;
-  for(const x of document.querySelectorAll('#militaryTabs button'))x.classList.toggle('on',x===b);
-  for(const card of document.querySelectorAll('#militaryBody [data-mil-sect]'))card.style.display=card.dataset.milSect===name?'':'none';
 };
 for(const b of document.querySelectorAll('#cityTabs [data-city-tab]'))b.onclick=()=>{
   if(b.dataset.cityTab==='plan'){
@@ -2852,47 +2858,63 @@ async function openMilitary(){
   militaryResume=!STATE.paused;
   if(militaryResume)await control('pause');
   renderMilitary();$('militaryModal').hidden=false;
+  document.body.classList.add('military-open');resize();
 }
 async function closeMilitary(){
   $('militaryModal').hidden=true;
+  document.body.classList.remove('military-open');resize();
   if(militaryResume)await control('resume');
   militaryResume=false;setRail('world');
 }
+let militaryTarget=null,militaryStateKey='';
 function renderMilitary(){
   if(!STATE)return;
   const c=STATE.countries[selectedCountry],isPlayer=STATE.player_country===selectedCountry;
+  militaryStateKey=JSON.stringify(c);
   const wars=c.at_war_with||[];
+  const tile=selectedTile?getTile(...selectedTile):null;
+  const owner=selectedTile?dynamicOwnerMap()[selectedTile.join(',')]:null;
+  const canMarch=isPlayer&&c.army_strength>0&&tile?.[2]&&(!owner||owner===selectedCountry);
+  const incoming=(c.diplomacy?.incoming_proposals||[]).filter(p=>p.pact==='PEACE');
+  const outgoing=(c.diplomacy?.outgoing_proposals||[]).filter(p=>p.pact==='PEACE');
   const others=WORLD.polities.filter(p=>p.id!==selectedCountry);
   const warTargets=others.filter(p=>!wars.includes(p.id));
   const position=c.army_position?`${c.army_position[0]},${c.army_position[1]}`:'无';
   const selected=selectedTile?`${selectedTile[0]},${selectedTile[1]}`:'未选择地块';
   $('militarySubtitle').textContent=`${countryMeta(selectedCountry)?.name||selectedCountry} · 军队维护费每天 ${fmtNum(c.military_upkeep,3)} 财政`;
   const warRows=wars.length?wars.map(id=>`<div class="war-row"><span>与 <b>${esc(countryMeta(id)?.name||id)}</b> 交战中</span>
-    ${isPlayer?`<span><button data-attack="${id}">边境进攻</button><button data-peace="${id}">请求和平</button></span>`:''}</div>`).join(''):'<div class="hint">当前没有战争。</div>';
+    ${isPlayer?`<span><button data-attack="${id}" ${c.army_strength>0?'':'disabled'}>进攻</button><button data-peace="${id}" ${outgoing.some(p=>p.target===id)?'disabled':''}>${outgoing.some(p=>p.target===id)?'等待和平回应':'请求和平'}</button></span>`:''}</div>`).join(''):'<div class="hint">当前没有战争。</div>';
   $('militaryBody').innerHTML=`<div class="mil-grid">
-    <div class="mil-card" data-mil-sect="army"><h3>王国军势</h3>
+    <div class="mil-card" data-mil-sect="army"><h3>军队</h3>
       <div class="mil-stat"><span>军队规模</span><b>${c.army_strength}</b></div>
       <div class="mil-stat"><span>驻扎地块</span><b>${position}</b></div>
       <div class="mil-stat"><span>每日维护</span><b>${fmtNum(c.military_upkeep,3)}</b></div>
       <div class="mil-stat"><span>战争疲劳</span><b>${fmtNum(c.war_exhaustion,1)}</b></div>
       <div class="mil-stat"><span>已选地块</span><b>${selected}</b></div>
-      ${isPlayer?`<div class="mil-buttons"><button data-recruit="1">招募 1</button><button data-recruit="2">招募 2</button>
-        <button data-march="1" ${selectedTile?'':'disabled'}>行军至已选地块</button></div>`:''}
+      ${isPlayer?`<div class="mil-buttons"><button data-recruit="1">招募 1</button><button data-recruit="2">招募 2</button><button data-recruit="3">招募 3</button><button data-recruit="4">招募 4</button>
+        <button data-march="1" ${canMarch?'':'disabled'}>行军至（${selected}）</button></div>`:''}
     </div>
-    <div class="mil-card" data-mil-sect="war"><h3>战争状态</h3>${warRows}
-      ${isPlayer&&warTargets.length?`<div class="mil-buttons"><select id="warTarget">${warTargets.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select><button data-declare-war>宣战</button></div>`:''}
-      <div class="hint">战斗是战略级边境结算：进攻需要双方领土接壤。胜利可占领一块边境领土；军事维护费是后期财政出口。</div>
+    <div class="mil-card" data-mil-sect="war"><h3>战争</h3>${warRows}
+      ${incoming.map(p=>`<div class="war-row"><span>${esc(countryMeta(p.sender)?.name||p.sender)} 请求和平</span>${isPlayer?`<span><button data-peace-accept="${p.proposal_id}">接受和平</button><button data-peace-reject="${p.proposal_id}">拒绝</button></span>`:''}</div>`).join('')}
+      ${isPlayer&&warTargets.length?`<div class="mil-buttons"><select id="warTarget">${warTargets.map(p=>`<option value="${p.id}" ${p.id===(militaryTarget||owner)?'selected':''}>${esc(p.name)}</option>`).join('')}</select><button data-declare-war>宣战</button></div>`:''}
+      <div class="hint">先选择国家宣战，再点击“进攻”。胜利可占领一块非城市中心地块；不相邻时可沿陆路远征，但战力会降低。</div>
     </div>
   </div>
-  <div class="hint"><b>行军：</b>先在地图选择己方或中立地块闭合本窗口，再次打开军事面板并点击“行军至已选地块”。单次最多 4 格；敌对领土不能直接行军，需要宣战后从边境进攻。</div>`;
+  <div class="hint">${isPlayer?'<b>行军：</b>直接点旁边地图的己方或中立陆地，再点“行军”。海域和外国领土不可直接行军，路线与距离由规则检查。<br><b>招募：</b>数字代表增加的军队规模，消耗财政与粮食，并增加每日军费。':`当前为观战模式。<button id="militaryTakeControl">接管 ${esc(countryMeta(selectedCountry)?.name||selectedCountry)}</button>`}</div>`;
   for(const b of document.querySelectorAll('[data-recruit]'))b.onclick=()=>submitPlayerAction({type:'MILITARY',operation:'RECRUIT',strength:Number(b.dataset.recruit)},'招募完成').then(renderMilitary);
-  for(const b of document.querySelectorAll('[data-attack]'))b.onclick=()=>submitPlayerAction({type:'MILITARY',operation:'ATTACK',target:b.dataset.attack},'边境战已结算').then(renderMilitary);
+  for(const b of document.querySelectorAll('[data-attack]'))b.onclick=()=>submitPlayerAction({type:'MILITARY',operation:'ATTACK',target:b.dataset.attack},'战斗已结算').then(renderMilitary);
   for(const b of document.querySelectorAll('[data-peace]'))b.onclick=()=>submitPlayerAction({type:'DIPLOMACY',operation:'PROPOSE_PEACE',target:b.dataset.peace},'和平提议已发送').then(renderMilitary);
   const declare=document.querySelector('[data-declare-war]');
   if(declare)declare.onclick=()=>submitPlayerAction({type:'DIPLOMACY',operation:'DECLARE_WAR',target:$('warTarget').value},'战争状态已建立').then(renderMilitary);
+  const target=$('warTarget');
+  if(target)target.onchange=()=>{militaryTarget=target.value;};
+  const take=$('militaryTakeControl');
+  if(take)take.onclick=()=>control('take_control',selectedCountry).then(renderMilitary);
+  for(const b of document.querySelectorAll('#militaryBody [data-peace-accept]'))b.onclick=()=>submitPlayerAction({type:'DIPLOMACY',operation:'ACCEPT_PACT',proposal_id:b.dataset.peaceAccept},'和平已达成').then(renderMilitary);
+  for(const b of document.querySelectorAll('#militaryBody [data-peace-reject]'))b.onclick=()=>submitPlayerAction({type:'DIPLOMACY',operation:'REJECT_PACT',proposal_id:b.dataset.peaceReject},'已拒绝和平提案').then(renderMilitary);
   const march=document.querySelector('[data-march]');
   if(march)march.onclick=()=>submitPlayerAction({type:'MILITARY',operation:'MARCH',tile:{col:selectedTile[0],row:selectedTile[1]}},'军队已行军').then(renderMilitary);
-  for(const card of document.querySelectorAll('#militaryBody [data-mil-sect]'))card.style.display=card.dataset.milSect===militaryFilter?'':'none';
+
 }
 async function openDiplomacy(){
   if(!STATE){showToast('请先进入一个世界',true);return;}
