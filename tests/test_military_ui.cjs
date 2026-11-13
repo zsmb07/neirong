@@ -1,0 +1,20 @@
+const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
+const html=fs.readFileSync(require('node:path').join(__dirname,'..','dashboard.html'),'utf8');
+const source=html.slice(html.indexOf('let militaryTarget='),html.indexOf('async function openDiplomacy'));
+const nodes={}; const el=id=>nodes[id]??=( {innerHTML:'',textContent:''} );
+const actions=[];
+const c={army_strength:2,army_position:[1,1],military_upkeep:1,war_exhaustion:0,at_war_with:['B'],diplomacy:{incoming_proposals:[{pact:'PEACE',sender:'B',proposal_id:'p1'}],outgoing_proposals:[]}};
+let land=true,owner='A';
+const ctx={STATE:{countries:{A:c},player_country:'A'},WORLD:{polities:[{id:'A',name:'A'},{id:'B',name:'B'}]},selectedCountry:'A',selectedTile:[2,2],$:el,document:{querySelectorAll:()=>[],querySelector:q=>q==='[data-march]'?el('march'):null},getTile:()=>[2,2,land],dynamicOwnerMap:()=>({'2,2':owner}),countryMeta:id=>({name:id}),esc:x=>x,fmtNum:x=>String(x),submitPlayerAction:async a=>{actions.push(a)},control:async()=>{}};
+vm.createContext(ctx);vm.runInContext(source,ctx);
+(async()=>{
+ctx.renderMilitary();assert.match(el('militaryBody').innerHTML,/接受和平/);assert.match(el('militaryBody').innerHTML,/data-march="1" >/);
+await el('march').onclick();assert.equal(actions[0].operation,'MARCH');assert.equal(actions[0].tile.col,2);
+land=false;ctx.renderMilitary();assert.match(el('militaryBody').innerHTML,/data-march="1" disabled/);
+land=true;owner='B';ctx.renderMilitary();assert.match(el('militaryBody').innerHTML,/data-march="1" disabled/);
+ctx.STATE.player_country=null;ctx.renderMilitary();assert.match(el('militaryBody').innerHTML,/militaryTakeControl/);assert.doesNotMatch(el('militaryBody').innerHTML,/data-recruit=/);
+assert.match(html,/if\(!\$\('militaryModal'\).hidden\)\{militaryTarget=/);
+assert.doesNotMatch(html,/militaryPickTile/);
+ctx.STATE.player_country='A';owner='A';c.army_position=[2,2];ctx.renderMilitary();assert.match(el('militaryBody').innerHTML,/disabled>已在目的地/);
+console.log('Military UI behavior checks passed');
+})();
