@@ -520,12 +520,13 @@ body.right-panel-open .notice-stack{right:354px}
 #militaryModal .modal-card{padding:16px 14px 28px}
 #militaryModal .mil-grid{grid-template-columns:1fr}
 #militaryModal .mil-buttons button{font-size:12px;min-height:36px;padding:6px 10px}
-body.military-open .app{padding-right:360px}
+body.military-open .workspace{margin-right:360px}
 body.military-open #worldLeft,body.military-open #worldRight,
 body.military-open #leftReopen,body.military-open #rightReopen{display:none!important}
 @media(max-width:760px){
   #militaryModal{left:0;right:0;top:46%;bottom:56px;width:auto;border-top:1px solid var(--line)}
-  body.military-open .app{padding-right:0;height:46%}
+  body.military-open .workspace{margin-right:0}
+  body.military-open .app{height:46%;padding-bottom:0}
 }
 </style>
 </head>
@@ -1737,7 +1738,7 @@ async function poll(force=false){
     const r=await fetch('/api/state',{cache:'no-store'});if(!r.ok)throw new Error('state');
     STATE=await r.json();
     syncDiaryBubbles();syncNoticeBubbles();
-    if(!$('militaryModal').hidden&&militaryStateKey!==JSON.stringify(STATE.countries[selectedCountry]))renderMilitary();
+    if(!$('militaryModal').hidden&&militaryStateKey!==JSON.stringify([selectedCountry,STATE.player_country,STATE.countries[selectedCountry]]))renderMilitary();
     if(!$('notifyModal').hidden)renderNotifyProjects();
     if(!$('nationModal').hidden){renderNationCities();renderNationRanking();}
     if(force===true){
@@ -2870,11 +2871,12 @@ let militaryTarget=null,militaryStateKey='';
 function renderMilitary(){
   if(!STATE)return;
   const c=STATE.countries[selectedCountry],isPlayer=STATE.player_country===selectedCountry;
-  militaryStateKey=JSON.stringify(c);
+  militaryStateKey=JSON.stringify([selectedCountry,STATE.player_country,c]);
   const wars=c.at_war_with||[];
   const tile=selectedTile?getTile(...selectedTile):null;
   const owner=selectedTile?dynamicOwnerMap()[selectedTile.join(',')]:null;
-  const canMarch=isPlayer&&c.army_strength>0&&tile?.[2]&&(!owner||owner===selectedCountry);
+  const atDestination=selectedTile&&c.army_position?.join(',')===selectedTile.join(',');
+  const canMarch=isPlayer&&c.army_strength>0&&tile?.[2]&&(!owner||owner===selectedCountry)&&!atDestination;
   const incoming=(c.diplomacy?.incoming_proposals||[]).filter(p=>p.pact==='PEACE');
   const outgoing=(c.diplomacy?.outgoing_proposals||[]).filter(p=>p.pact==='PEACE');
   const others=WORLD.polities.filter(p=>p.id!==selectedCountry);
@@ -2883,7 +2885,7 @@ function renderMilitary(){
   const selected=selectedTile?`${selectedTile[0]},${selectedTile[1]}`:'未选择地块';
   $('militarySubtitle').textContent=`${countryMeta(selectedCountry)?.name||selectedCountry} · 军队维护费每天 ${fmtNum(c.military_upkeep,3)} 财政`;
   const warRows=wars.length?wars.map(id=>`<div class="war-row"><span>与 <b>${esc(countryMeta(id)?.name||id)}</b> 交战中</span>
-    ${isPlayer?`<span><button data-attack="${id}" ${c.army_strength>0?'':'disabled'}>进攻</button><button data-peace="${id}" ${outgoing.some(p=>p.target===id)?'disabled':''}>${outgoing.some(p=>p.target===id)?'等待和平回应':'请求和平'}</button></span>`:''}</div>`).join(''):'<div class="hint">当前没有战争。</div>';
+    ${isPlayer?`<span><button data-attack="${id}" ${c.army_strength>0?'':'disabled'}>进攻</button><button data-peace="${id}" ${outgoing.some(p=>p.target===id)||incoming.some(p=>p.sender===id)?'disabled':''}>${outgoing.some(p=>p.target===id)?'等待和平回应':'请求和平'}</button></span>`:''}</div>`).join(''):'<div class="hint">当前没有战争。</div>';
   $('militaryBody').innerHTML=`<div class="mil-grid">
     <div class="mil-card" data-mil-sect="army"><h3>军队</h3>
       <div class="mil-stat"><span>军队规模</span><b>${c.army_strength}</b></div>
@@ -2892,7 +2894,7 @@ function renderMilitary(){
       <div class="mil-stat"><span>战争疲劳</span><b>${fmtNum(c.war_exhaustion,1)}</b></div>
       <div class="mil-stat"><span>已选地块</span><b>${selected}</b></div>
       ${isPlayer?`<div class="mil-buttons"><button data-recruit="1">招募 1</button><button data-recruit="2">招募 2</button><button data-recruit="3">招募 3</button><button data-recruit="4">招募 4</button>
-        <button data-march="1" ${canMarch?'':'disabled'}>行军至（${selected}）</button></div>`:''}
+        <button data-march="1" ${canMarch?'':'disabled'}>${atDestination?'已在目的地':`行军至（${selected}）`}</button></div>`:''}
     </div>
     <div class="mil-card" data-mil-sect="war"><h3>战争</h3>${warRows}
       ${incoming.map(p=>`<div class="war-row"><span>${esc(countryMeta(p.sender)?.name||p.sender)} 请求和平</span>${isPlayer?`<span><button data-peace-accept="${p.proposal_id}">接受和平</button><button data-peace-reject="${p.proposal_id}">拒绝</button></span>`:''}</div>`).join('')}
