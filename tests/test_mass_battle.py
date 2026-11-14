@@ -90,19 +90,6 @@ def army_at_home(elar, units=3):
 
 # --- the ceiling: one fixed garrison per camp, camps uncapped -------------------------
 
-def test_the_field_ceiling_is_the_camps_a_realm_actually_holds():
-    config = engine_of().state.config
-    military = config["military"]
-    floor = military["maximum_strength"]
-    garrison = military["barracks"]["garrison_capacity"]
-    assert field_cap([], config) == floor, "no camp yet: the standing army is the floor"
-    assert field_cap(["BARRACKS"], config) == floor, "one camp is still below that floor"
-    assert field_cap(["BARRACKS"] * 4, config) == 4 * garrison
-    assert field_cap(["BARRACKS"] * 9, config) == 9 * garrison, "the ceiling keeps climbing"
-    # The rest of the building table is not a troop house.
-    assert field_cap(["BARRACKS"] * 4 + ["FARM"] * 6, config) == 4 * garrison
-
-
 def test_barracks_are_no_longer_a_one_off_building():
     """Five camps on five tiles: nothing caps the count any more, capped types still refuse."""
     engine = engine_of()
@@ -127,85 +114,6 @@ def test_barracks_are_no_longer_a_one_off_building():
     assert not refused.accepted and refused.reason_code == "BUILDING_UNIQUE_LIMIT"
 
 
-def test_recruiting_past_the_standing_floor_needs_camps_and_is_then_allowed():
-    engine = engine_of()
-    state = engine.state
-    elar = state.countries["ELAR"]
-    elar.treasury = elar.food = 10_000.0
-    elar.technology = {field: 5 for field in state.config["tech_tree"]}
-    military = state.config["military"]
-    garrison = military["barracks"]["garrison_capacity"]
-    # The camps go on tiles the army does not stand on: a merged field army is allowed to be
-    # bigger than one camp's garrison, which is the whole point of massing several camps.
-    army = clear_armies(elar).new_army(tile=elar.tiles[0], units={"MILITIA": 8, "ARCHER": 4})
-    assert army.strength == military["maximum_strength"]
-
-    blocked = engine.apply_action("ELAR", recruit("ARCHER", 1))
-    assert not blocked.accepted and blocked.reason_code == "ARMY_LIMIT"
-
-    stamp_camps(elar, 4, skip={elar.tiles[0]})
-    grown = engine.apply_action("ELAR", recruit("ARCHER", 1))
-    assert grown.accepted, grown.reason_code
-    assert elar.army_strength == military["maximum_strength"] + 1
-
-    assert engine.apply_action("ELAR", recruit("HEAVY_INFANTRY", 3)).accepted
-    assert elar.army_strength == field_cap(elar.buildings.values(), state.config) == 4 * garrison
-    full = engine.apply_action("ELAR", recruit("HEAVY_INFANTRY", 1))
-    assert not full.accepted and full.reason_code == "ARMY_LIMIT"
-
-
-def test_camps_train_their_garrisons_and_the_realm_grows_past_the_standing_floor():
-    engine = engine_of()
-    state = engine.state
-    elar = state.countries["ELAR"]
-    elar.treasury = elar.food = 100_000.0
-    elar.technology = {field: 5 for field in state.config["tech_tree"]}
-    military = state.config["military"]
-    garrison = military["barracks"]["garrison_capacity"]
-    camps = elar.tiles[:4]
-    for coord in camps:
-        elar.buildings[coord] = "BARRACKS"
-    clear_armies(elar)
-    armies = [
-        elar.new_army(tile=coord, recruiting=True, preferred_unit=unit)
-        for coord, unit in zip(camps, ("ARCHER", "HEAVY_INFANTRY", "CHARIOT", "CAVALRY"))
-    ]
-    for _ in range(400):
-        engine.military.barracks_daily()
-
-    assert [army.strength for army in armies] == [garrison] * 4
-    assert elar.army_strength == 4 * garrison > military["maximum_strength"]
-    # Every camp is full, so the ceiling the settlement now hits is the realm-wide one.
-    assert engine.military._raise_block(elar, armies[0], "ARCHER") == "ARMY_LIMIT"
-
-
-def test_a_camp_that_filled_its_garrison_stops_while_the_realm_still_has_room():
-    engine = engine_of()
-    state = engine.state
-    elar = state.countries["ELAR"]
-    elar.treasury = elar.food = 100_000.0
-    elar.technology = {field: 5 for field in state.config["tech_tree"]}
-    military = state.config["military"]
-    garrison = military["barracks"]["garrison_capacity"]
-    camps = elar.tiles[:2]
-    for coord in camps:
-        elar.buildings[coord] = "BARRACKS"
-    clear_armies(elar)
-    armies = [elar.new_army(tile=coord, recruiting=True, preferred_unit=unit)
-              for coord, unit in zip(camps, ("ARCHER", "CAVALRY"))]
-    for _ in range(400):
-        engine.military.barracks_daily()
-
-    assert [army.strength for army in armies] == [garrison, garrison]
-    assert elar.army_strength < military["maximum_strength"], "the realm is not at its ceiling"
-    assert engine.military._raise_block(elar, armies[0], "ARCHER") == "GARRISON_LIMIT"
-    price = state.config["units"]["ARCHER"]["cost"]["treasury"]
-    # A stalled camp keeps the wage it already paid, capped instead of refunded.
-    assert armies[0].progress == pytest.approx(price * military["barracks"]["progress_cap_ratio"])
-
-
-# --- the weight of a battle: only the armies standing around the gate -----------------
-
 def test_mass_is_the_share_of_the_roster_standing_around_the_gate():
     engine = engine_of()
     elar = engine.state.countries["ELAR"]
@@ -221,7 +129,7 @@ def test_mass_is_the_share_of_the_roster_standing_around_the_gate():
     first.tile = second.tile = staging
     both, share = engine.military._mass(elar, gate, first)
     assert {army.army_id for army in both} == {first.army_id, second.army_id}
-    assert share == pytest.approx(1.0), "the whole roster at one gate fights at full weight"
+    assert share == pytest.approx(0.75), "one column alone cannot get full coordination"
 
     second.march = MarchOrder(purpose="MARCH", route=[second.tile, elar.tiles[-1]],
                               cumulative=[0.0, 1.0])
@@ -233,7 +141,7 @@ def test_mass_is_the_share_of_the_roster_standing_around_the_gate():
     second.units = {}
     present, share = engine.military._mass(elar, gate, first)
     assert [army.army_id for army in present] == [first.army_id]
-    assert share == pytest.approx(1.0), "a wrecked camp is not in the roster the share measures"
+    assert share == pytest.approx(0.75), "a wrecked camp is not in the roster the share measures"
 
 
 def test_a_side_with_nobody_at_the_gate_fights_at_the_floor():
@@ -248,7 +156,7 @@ def test_a_side_with_nobody_at_the_gate_fights_at_the_floor():
 
     raider.tile = staging
     present, share = engine.military._mass(elar, gate, raider)
-    assert len(present) == 1 and share == pytest.approx(1.0), "one army is the whole roster"
+    assert len(present) == 1 and share == pytest.approx(0.75), "one army cannot coordinate with itself"
     _present, empty = engine.military._mass(vayr, gate)
     assert empty == pytest.approx(floor), "nothing stands there: the floor is what defends"
 
@@ -275,8 +183,7 @@ def test_a_battle_records_who_arrived_and_bleeds_them_before_the_rest():
     effects = battle.effects
 
     assert effects["attacker_mass"] == [first.army_id, second.army_id]
-    assert effects["attacker_share"] == pytest.approx(round(expected, 3)), \
-        "the gate holds three quarters of the realm's men"
+    assert effects["attacker_share"] == pytest.approx(0.75), "each occupied hex counts once"
     assert floor <= effects["defender_share"] <= 1.0
     assert effects["attacker_loss"] == sum(effects["attacker_units"].values())
 
@@ -306,7 +213,7 @@ def test_a_defender_garrison_far_from_the_gate_counts_as_little_as_attacker_one(
     expected_share = engine.military._mass(vayr, gate)[1]
     battle = engine.military._battle(elar, vayr, first, gate, expedition=False)
     assert battle["attacker_mass"] == [first.army_id, second.army_id]
-    assert battle["attacker_share"] == pytest.approx(1.0)
+    assert battle["attacker_share"] == pytest.approx(0.75)
     assert battle["defender_mass"] == [guard.army_id]
     assert battle["defender_share"] == pytest.approx(round(expected_share, 3))
     assert battle["defender_share"] > state.config["military"]["minimum_mass_share"]
@@ -368,37 +275,6 @@ def town(country_overrides=None):
     return {**country, **(country_overrides or {})}
 
 
-def test_the_mock_agent_wants_a_camp_for_every_city_it_holds():
-    rules = engine_of().state.config
-    agent = HeuristicAgent("ELAR")
-    profile = PERSONALITIES["conservative"]["mock"]
-    home_camps = profile["barracks"]
-
-    assert agent._building_choice(town(), rules) == "BARRACKS"
-    assert agent._building_choice(
-        town({"buildings": {f"T{i}": "BARRACKS" for i in range(home_camps)}}), rules
-    ) != "BARRACKS", "the home appetite is filled"
-
-    grown = town({"cities": [{"health": 100, "security": 100}] * (home_camps + 3)})
-    assert agent._building_choice(grown, rules) == "BARRACKS", "each new city asks for a camp"
-    filled_outward = {**grown,
-                      "buildings": {f"T{i}": "BARRACKS" for i in range(home_camps + 3)}}
-    assert agent._building_choice(filled_outward, rules) != "BARRACKS"
-
-    broke = town({"treasury": rules["buildings"]["BARRACKS"]["cost"] - 0.1})
-    assert agent._building_choice(broke, rules) != "BARRACKS", "a camp nobody can wage waits"
-
-    # The bricks are affordable here and the daily balance is not. Stock alone let a realm
-    # raise a wall it then could not feed, which is the ruin the 停摆 feed filled up with.
-    ruin = town({"treasury": 5_000.0, "last_economy": {"treasury_income": 1.2},
-                 "military_upkeep": 0.85})
-    assert agent._building_choice(ruin, rules) != "BARRACKS", "存量再厚也养不活第二座营"
-
-    wage = float(rules["military"]["barracks"]["daily_cost"])
-    thin = town({"last_economy": {"treasury_income": wage * 2.5 / 0.4}})
-    assert agent._building_choice(thin, rules) == "BARRACKS", "账算得过来的日子就该起营"
-
-
 def camp_observation(strength, recruiting, army_cap):
     country = {
         "treasury": 1_000.0, "army_strength": strength, "army_cap": army_cap,
@@ -409,75 +285,6 @@ def camp_observation(strength, recruiting, army_cap):
         }],
     }
     return country
-
-
-def test_the_mock_agent_stops_a_camp_that_filled_its_garrison():
-    rules = engine_of().state.config
-    agent = HeuristicAgent("ELAR")
-    garrison = rules["military"]["barracks"]["garrison_capacity"]
-
-    filled = agent._barracks_orders({}, {}, rules, camp_observation(garrison, True, 12))
-    assert filled == [{"type": "MILITARY", "operation": "SET_RECRUITING",
-                       "army_id": "ELAR-A1", "recruiting": False}], \
-        "a filled camp comes off the wage book instead of stalling"
-
-    room = agent._barracks_orders({}, {}, rules, camp_observation(1, False, 12))
-    assert room == [{"type": "MILITARY", "operation": "SET_RECRUITING",
-                     "army_id": "ELAR-A1", "recruiting": True}]
-
-    ceiling = agent._barracks_orders({}, {}, rules, camp_observation(1, True, 1))
-    assert ceiling[0]["recruiting"] is False, "a realm at its field ceiling stops paying wages"
-
-
-def test_the_mock_agent_recruits_to_the_live_ceiling_not_the_flat_floor():
-    rules = engine_of().state.config
-    military = rules["military"]
-    profile = PERSONALITIES["neutral"]["mock"]
-    agent = HeuristicAgent("ELAR")
-    floor = military["maximum_strength"]
-
-    def observation(strength, cap):
-        return {
-            "rules": rules,
-            "country": {
-                "technology": {field: 5 for field in rules["tech_tree"]},
-                "army_units": {}, "army_strength": strength, "army_cap": cap,
-                "treasury": 10_000.0, "food": 10_000.0,
-            },
-        }
-
-    assert agent._recruit_choice(observation(floor - 1, floor), profile, 1)
-    assert agent._recruit_choice(observation(floor, floor), profile, 1) is None
-    assert agent._recruit_choice(observation(floor, floor + 4), profile, 1), \
-        "finished camps raise the ceiling and the agent has to see it"
-
-
-# --- the UI leg: the same numbers reach the panel -------------------------------------
-
-def test_the_snapshot_carries_the_ceiling_the_panel_shows():
-    engine = engine_of()
-    state = engine.state
-    elar = state.countries["ELAR"]
-    military = state.config["military"]
-    assert state.summary()["countries"]["ELAR"]["army_cap"] == field_cap(
-        elar.buildings.values(), state.config)
-    stamp_camps(elar, 5)
-    assert state.summary()["countries"]["ELAR"]["army_cap"] == \
-        5 * military["barracks"]["garrison_capacity"]
-
-
-def test_the_panel_shows_camps_mass_and_the_convergence_button():
-    dashboard = (ROOT / "dashboard.html").read_text(encoding="utf-8")
-    for contract in (
-        "const armyCap=c.army_cap||milRules.maximum_strength||0;",
-        "到场 ${o.mass||1} 支 · 战力系数 ${fmtNum(o.mass_share||1,2)}",
-        'data-mass="${esc(gate)}"',
-        "兵营 / 全国编制上限",
-        "其余向此集结",
-    ):
-        assert contract in dashboard, contract
-    for key in ("mass_radius", "minimum_mass_share", "strike_columns", "garrison_capacity"):
-        assert key in dashboard, key
 
 
 def test_the_content_gate_still_demands_the_mass_parameters():

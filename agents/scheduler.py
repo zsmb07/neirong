@@ -8,7 +8,7 @@ from typing import Any
 from agents.heuristic import HeuristicAgent
 from core.actions import PUBLIC_ACTIONS
 from core.construction import Construction
-from core.content import field_cap
+from core.content import army_upkeep
 from core.military import Military
 from core.society import (
     city_static_metrics,
@@ -139,7 +139,7 @@ def build_observation(state, country_id: str) -> dict[str, Any]:
             "specialization": specialty,
             "outposts": len(country.outposts),
             "army_strength": country.army_strength,
-            "army_cap": field_cap(country.buildings.values(), state.config),
+            "military_upkeep_food": army_upkeep(country.army_units, state.config),
             "army_units": dict(country.army_units),
             "army_position": list(country.army_position) if country.army_position else None,
             "rendezvous_hosts": Military(state).rendezvous_hosts(country_id),

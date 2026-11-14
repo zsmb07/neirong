@@ -104,7 +104,7 @@ def test_an_undefended_landing_costs_the_invader_a_fraction_of_a_battle():
     engine = engine_of()
     state = engine.state
     rate = state.config["military"]["unopposed_loss_rate"]
-    guard_rate = state.config["military"]["attacker_loss_rate"]
+    guard_rate = state.config["military"]["victor_loss_rate"]
     army = road_under_way(engine, units=60)
     undefended = alerts(engine)["VAYR"][0]
 

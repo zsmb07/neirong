@@ -227,14 +227,14 @@ def _messages_for_event(state, event: dict[str, Any]) -> list[dict[str, Any]]:
         unit = _unit_name(state, event.get("unit", ""))
         return [{
             "country_id": cid, "priority": 42, "title": "兵营募兵", "mood": "踏实",
-            "text": f"兵营练出一支{unit}，军饷是按天扣的，养兵得看国库。",
+            "text": f"兵营练出一支{unit}，训练花财政，成兵后只吃粮。",
         }]
     if kind == "army_desertion":
         cid = event.get("country_id")
         unit = _unit_name(state, event.get("unit", ""))
         return [{
             "country_id": cid, "priority": 72, "title": "军队逃散", "mood": "焦虑",
-            "text": f"军饷跟不上，跑掉了{unit}。得先稳住军队。",
+            "text": f"粮仓供不上口粮，跑掉了{unit}。得先稳住军队。",
         }]
     if kind == "hazard_impact":
         cid = event.get("country_id")

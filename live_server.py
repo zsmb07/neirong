@@ -837,6 +837,29 @@ class LiveSession:
             return {}
         return Military(self.simulation.state).strike_options(seat)
 
+    def dispatch_preview(self, payload: dict) -> dict:
+        with self.lock:
+            actor = self.seat()
+            if not actor:
+                return {"ok": False, "error": "请先接管国家"}
+            state = self.simulation.state
+            try:
+                action = validate_action(actor, {"type": "MILITARY", "operation": "DISPATCH",
+                                                 "orders": payload.get("orders")}, state.config)
+                targets = {(o["tile"]["col"], o["tile"]["row"]) for o in action["orders"]
+                           if o["operation"] == "ATTACK" and o.get("tile")}
+                if len(targets) != 1 or not all(o["operation"] == "ATTACK" and o.get("tile")
+                                                for o in action["orders"]):
+                    return {"ok": False, "error": "请选择同一目标格"}
+                tile = next(iter(targets))
+                if tile not in state.world.tiles:
+                    return {"ok": False, "error": "地块不存在"}
+                military = Military(state)
+                quote = military.tile_strikes(actor, tile)
+                return {"ok": True, "rows": military.dispatch_projection(actor, action["orders"], quote)}
+            except ActionRejected as exc:
+                return {"ok": False, "error": exc.text}
+
     def rendezvous_preview(self, payload: dict) -> dict:
         with self.lock:
             actor = self.seat()
@@ -1062,7 +1085,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path not in {
             "/api/control", "/api/action", "/api/agents", "/api/agents/test",
             "/api/agents/budget", "/api/agents/personality", "/api/new_game", "/api/saves",
-            "/api/map_preview", "/api/march_preview", "/api/rendezvous_preview",
+            "/api/map_preview", "/api/march_preview", "/api/rendezvous_preview", "/api/dispatch_preview",
         }:
             self._json({"error": "not found"}, 404)
             return
@@ -1105,6 +1128,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             elif self.path == "/api/map_preview":
                 result = self.session.map_preview(payload.get("draft") or {})
+            elif self.path == "/api/dispatch_preview":
+                result = self.session.dispatch_preview(payload)
             elif self.path == "/api/rendezvous_preview":
                 result = self.session.rendezvous_preview(payload)
             elif self.path == "/api/march_preview":

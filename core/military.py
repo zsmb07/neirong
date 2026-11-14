@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from core.actions import ActionRejected, ActionResult
-from core.content import army_upkeep, field_cap
+from core.content import army_upkeep, training_days, unit_food_upkeep
 from core.movement import Movement, march_days
 from core.society import stability_factor
 from core.state import (
@@ -11,6 +11,9 @@ from core.state import (
     MarchOrder,
     RECRUIT_STALL_QUIET,
     army_payload,
+    army_unit_room,
+    camp_count,
+    training_army,
     barracks_target,
     calendar_date,
     camp_garrison,
@@ -140,18 +143,15 @@ class Military:
                 "TECHNOLOGY_REQUIRED",
                 f"{spec['label']} 需要{branch}达到 {requirement['level']} 级",
             )
-        if country.army_strength + amount > self._field_cap(country):
-            raise ActionRejected("ARMY_LIMIT", "军队规模达到上限")
-        if country.army_units.get(unit_id, 0) + amount > spec["max_count"]:
-            raise ActionRejected("UNIT_LIMIT", f"{spec['label']} 最多编成 {spec['max_count']} 支")
-        capacity = int(self.barracks["garrison_capacity"])
-        if army is not None and country.buildings.get(army.tile) == "BARRACKS":
-            if army.strength + amount > capacity:
-                raise ActionRejected(
-                    "GARRISON_LIMIT",
-                    f"这一营只编 {capacity} 支定额，已站 {army.strength} 支，"
-                    f"要募更多就先分兵或再修一座兵营",
-                )
+        if amount > army_unit_room(country, army, unit_id, self.state.config):
+            raise ActionRejected("UNIT_LIMIT", f"{spec['label']} 已用完兵营提供的名额")
+        tile = army.tile if army and army.tile else self.state.capital_center(actor)
+        if tile is not None:
+            if self._stationed_other(country, army, tile):
+                raise ActionRejected("ALREADY_GARRISONED", "目标格已有本国驻军，请选择该军")
+            capacity = self.rendezvous_capacity(country, tile, army)["room"]
+            if amount > capacity:
+                raise ActionRejected("CAPACITY_LIMIT", f"驻格容量不足，还能装 {capacity} 支")
         treasury_cost = amount * float(spec["cost"]["treasury"])
         food_cost = amount * float(spec["cost"]["food"])
         if country.treasury + 1e-9 < treasury_cost:
@@ -178,10 +178,6 @@ class Military:
             "food_cost": food_cost,
         }
 
-    def _field_cap(self, country) -> int:
-        """Units this realm may keep under arms: one fixed garrison per finished barracks."""
-        return field_cap(country.buildings.values(), self.state.config)
-
     def _mass(self, country, tile, army=None) -> tuple[list, float]:
         """The armies that actually fight a battle at `tile`, and what that is worth.
 
@@ -192,31 +188,32 @@ class Military:
         wrecked or empty contribute nothing to either side.
         """
         radius = int(self.config["mass_radius"])
-        floor = float(self.config["minimum_mass_share"])
         present = [
             other for other in sorted(country.armies, key=lambda item: item.army_id)
             if other.march is None and other.strength > 0 and other.tile is not None
             and (other is army or hex_distance(other.tile, tile) <= radius)
         ]
         share = sum(other.strength for other in present) / max(1, country.army_strength)
-        return present, floor + (1.0 - floor) * min(1.0, share)
+        return present, self._mass_factor(share, len({army.tile for army in present}))
 
-    def _loss_plan(self, attackers, defenders) -> tuple[int, int, bool]:
-        """How many soldiers each side pays for one fight, from the ring it stands in.
+    def _mass_factor(self, share: float, occupied_slots: int) -> float:
+        floor = float(self.config["minimum_mass_share"])
+        # Support is still valuable with one army per hex. A lone column,
+        # even if it is the whole realm, cannot earn full coordination.
+        presence = min(share, 0.5 if occupied_slots == 1 else 1.0)
+        return floor + (1.0 - floor) * presence
 
-        An undefended gate is the whole point of taking the edge cities first: nobody is
-        there to shoot back, so the column loses `unopposed_loss_rate` of the men it
-        brought and nothing is faked onto the defender's far-away camps. A real battle
-        still costs both sides at least one man, so a 1-unit raid cannot be free.
-        """
-        if not defenders:
-            return (int(sum(other.strength for other in attackers)
-                        * self.config["unopposed_loss_rate"]), 0, True)
-        return (max(1, int(sum(other.strength for other in attackers)
-                           * self.config["attacker_loss_rate"])),
-                max(1, int(sum(other.strength for other in defenders)
-                           * self.config["defender_loss_rate"])),
-                False)
+    def _loss_plan(self, attackers, defenders, *, won=None) -> tuple[int, int, bool]:
+        attack = sum(a.strength for a in attackers)
+        defense = sum(a.strength for a in defenders)
+        if not defense:
+            return int(attack * self.config["unopposed_loss_rate"]), 0, True
+        victor = self.config.get("victor_loss_rate", .04)
+        loser = self.config.get("loser_loss_rate", .42)
+        # A quote is conditional: it cannot know the outcome before the battle roll.
+        return (int(attack * victor), max(1, int(defense * loser)), False) if won is not False else (
+            max(1, int(attack * loser)), int(defense * victor), False
+        )
 
     def _defended_city(self, country, tile: tuple[int, int]):
         """The city whose ground this tile is, if any: the only stage a rout can happen on."""
@@ -288,7 +285,7 @@ class Military:
         def ranked(limit: int | None) -> list:
             rows = []
             for coord, cost in costs.items():
-                if coord == start:
+                if coord == start or self._camps_of(loser, coord):
                     continue
                 distance = hex_distance(coord, start)
                 if limit is not None and distance > limit:
@@ -315,6 +312,11 @@ class Military:
         tomorrow; `sync_barracks` will raise a fresh army on any barracks that still stands.
         """
         country.armies.remove(army)
+        if "~" not in army.army_id:
+            country.army_tombstones.setdefault(army.army_id, {
+                "day": self.state.day_index, "tile": self._tile(army.tile),
+                "reason": reason, "units": dict(army.units),
+            })
         self._purge_siege_ledger(country.country_id, {army.army_id}, reason)
 
     def _purge_siege_ledger(self, attacker_id: str, army_ids: set[str], reason: str) -> None:
@@ -392,58 +394,47 @@ class Military:
                     country.new_army(tile=coord, recruiting=True)
 
     def barracks_daily(self) -> None:
-        """Barracks turn a daily treasury trickle into trained units, camp by camp.
-
-        The daily wage is spent even when a cap blocks delivery, and the progress that
-        wage bought is capped instead of refunded, so a stalled barracks keeps waiting.
-        Whatever it is waiting on gets written to `army.stall`, the same code the panel
-        reads, and an involuntary stop is announced once rather than every single day.
-        Deliberately RNG-free so an action log replays identically.
-        """
+        """All completed camps train one staffed army at the same time."""
         self.sync_barracks()
-        wage = float(self.barracks["daily_cost"])
         cap_ratio = float(self.barracks["progress_cap_ratio"])
         for country in self.state.countries.values():
-            for coord, building in country.buildings.items():
-                if building != "BARRACKS":
-                    continue
-                army = camp_garrison(country, coord, self.state.config)
-                if army is None:
-                    self._stall(country, None, "NO_GARRISON", coord, wage)
-                    continue
-                if not army.strength and coord in country.barracks_dispatches:
-                    self._stall(country, army, "NO_GARRISON", coord, wage)
-                    continue
-                if not army.recruiting:
-                    self._stall(country, army, "PAUSED", coord, wage)
-                    continue
-                if country.treasury + 1e-9 < wage:
-                    self._stall(country, army, "INSUFFICIENT_WAGE", coord, wage)
-                    continue
-                country.treasury -= wage
-                army.progress += wage
-                unit_id = self._barracks_unit(country, army)
-                price = float(self.units[unit_id]["cost"]["treasury"])
-                block = self._raise_block(country, army, unit_id)
+            army = training_army(country)
+            if army is None:
+                continue
+            camps = camp_count(country)
+            wage = float(self.barracks["daily_cost"]) * camps
+            unit = self._barracks_unit(country, army)
+            spec = self.units[unit]
+            days = training_days(self.state.config, unit)
+            block = self._raise_block(country, army, unit)
+            if not block and not self.rendezvous_capacity(country, army.tile)["room"]:
+                block = "CAPACITY_LIMIT"
+            if block:
+                army.progress = min(army.progress, days * cap_ratio)
+                self._stall(country, army, block, army.tile, wage, unit)
+                continue
+            if country.treasury + 1e-9 < wage:
+                self._stall(country, army, "INSUFFICIENT_WAGE", army.tile, wage, unit)
+                continue
+            country.treasury = max(0.0, country.treasury - wage)
+            army.progress += camps
+            food = float(spec["cost"]["food"])
+            while army.progress + 1e-9 >= days:
+                block = self._raise_block(country, army, unit)
+                if not block and not self.rendezvous_capacity(country, army.tile)["room"]:
+                    block = "CAPACITY_LIMIT"
                 if block:
-                    army.progress = min(army.progress, price * cap_ratio)
-                    self._stall(country, army, block, coord, wage, unit_id)
-                    continue
-                if army.progress + 1e-9 < price:
-                    self._stall(country, army, "", coord, wage, unit_id)
-                    continue
-                food_cost = float(self.units[unit_id]["cost"]["food"])
-                country.food -= food_cost
-                army.progress = max(0.0, army.progress - price)
-                army.units[unit_id] = army.units.get(unit_id, 0) + 1
+                    army.progress = min(army.progress, days * cap_ratio)
+                    break
+                country.food = max(0.0, country.food - food)
+                army.progress = max(0.0, army.progress - days)
+                army.units[unit] = army.units.get(unit, 0) + 1
                 army.raised += 1
-                self._stall(country, army, "", coord, wage, unit_id)
-                self.state.record(
-                    "barracks_recruit", country_id=country.country_id, army_id=army.army_id,
-                    unit=unit_id, amount=1, strength=country.army_strength,
-                    tile={"col": coord[0], "row": coord[1]},
-                    food_cost=round(food_cost, 3),
-                )
+                self.state.record("barracks_recruit", country_id=country.country_id,
+                                  army_id=army.army_id, unit=unit, amount=1,
+                                  strength=country.army_strength, tile=self._tile(army.tile),
+                                  food_cost=round(food, 3))
+            self._stall(country, army, block or "", army.tile, wage, unit)
 
     def _stall(self, country, army, code: str, tile, wage: float,
                unit_id: str | None = None) -> None:
@@ -493,6 +484,7 @@ class Military:
             purpose=purpose, route=plan["route"], cumulative=plan["cumulative"],
             target=target, objective=objective, expedition=expedition,
             issued_sequence=len(self.state.event_log) + 1,
+            action_id=f"A{self.state.next_action_number - 1:08d}",
         )
         route = plan["route"]
         self.state.record(
@@ -553,6 +545,8 @@ class Military:
         country = self.state.countries[actor]
         army = self._army_of(country, army_id)
         self._require_marchable(army)
+        if self._stationed_other(country, army, target):
+            raise ActionRejected("ALREADY_GARRISONED", "目标格已有本国驻军，请用会师")
         if army.tile == target:
             raise ActionRejected("ALREADY_THERE", "军队已经驻在这格")
         owners = self._owners()
@@ -581,14 +575,14 @@ class Military:
             # with any other army already waiting there.
             stationed.append(host)
         used = sum(army.strength for army in stationed)
-        camp = country.buildings.get(tile) == "BARRACKS"
         unit_room = {}
-        if camp:
+        camps = camp_count(country)
+        if camps:
             for unit_id, spec in self.units.items():
-                limit = min(int(self.barracks["garrison_capacity"]), int(spec["max_count"]))
+                limit = int(spec["max_count"]) * camps
                 present = sum(army.units.get(unit_id, 0) for army in stationed)
                 unit_room[unit_id] = max(0, limit - present)
-        return {"capacity": capacity, "room": max(0, capacity - used),
+        return {"capacity": capacity, "occupied": used, "excess": max(0, used - capacity), "room": max(0, capacity - used),
                 "capital": capital, "unit_room": unit_room}
 
     def rendezvous_hosts(self, actor: str) -> list[dict]:
@@ -631,15 +625,18 @@ class Military:
         unit_limit = sum(min(count, capacity["unit_room"].get(unit, count))
                          for unit, count in source.units.items())
         errors = self._rendezvous_errors(units, source.units, capacity)
-        if not errors and source.tile != tile:
+        plan = {"days": 0, "cost": 0.0}
+        if source.tile != tile:
             road = self._road(actor, source.tile, tile, explain=True)
-            if road["plan"] is None:
+            plan = road["plan"]
+            if plan is None:
                 code, message = self._refusal(tile, road, self.movement_config["maximum_order_cost"])
                 errors.append({"code": code, "text": message})
         return {
             **capacity, "destination": self._tile(tile),
             "source_strength": source.strength, "source_units": dict(source.units),
             "source_labels": {u: self.units[u]["label"] for u in source.units},
+            "days": plan["days"] if plan else None, "cost": plan["cost"] if plan else None,
             "maximum": min(unit_limit, capacity["room"]),
             "errors": errors,
         }
@@ -741,6 +738,10 @@ class Military:
                 reason = "会师未成：无法在目标格驻扎，已撤回可驻地"
             country.army_serial += 1
             army.army_id = f"{country.country_id}-A{country.army_serial}"
+            if self._stationed_other(country, army, army.tile):
+                self._return_to_free_tile(country, army, order)
+                if code == "RENDEZVOUS_CAMPED":
+                    code, reason = "ALREADY_GARRISONED", "会师未成：目标已有驻军，已撤回可驻地"
             if errors:
                 reason += " · " + errors[0]["text"]
         else:
@@ -812,7 +813,9 @@ class Military:
 
     def _best_approach(self, army, staging, movement: Movement, costs, previous):
         """Cheapest camp tile already priced by `costs`, as (plan, objective)."""
-        reached = [coord for coord in staging if coord in costs]
+        country = next((c for c in self.state.countries.values() if c.find_army(army.army_id) is army), None)
+        reached = [coord for coord in staging if coord in costs
+                   and (country is None or not self._landing_claimed(country, army, coord))]
         if not reached:
             return None
         hold = min(reached, key=lambda coord: (costs[coord], coord[1], coord[0]))
@@ -843,7 +846,7 @@ class Military:
         plan, _hold, objective = found
         return plan, objective, self._expedition(actor, plan, self._owners())
 
-    def _approach_to(self, actor: str, army, defender, objective):
+    def _approach_to(self, actor: str, army, defender, objective, *, reserved=()):
         """Cheapest single order that ends beside one named tile, as (plan, hold, expedition).
 
         `strike_options` picks whichever frontier tile is nearest; a player pointing at a
@@ -854,12 +857,14 @@ class Military:
         movement = self.movement(actor)
         staging = [
             coord for coord in self.state.world.neighbors(*objective)
-            if coord not in defender.tiles and movement.cost(coord) is not None
+            if coord not in defender.tiles and coord not in reserved and movement.cost(coord) is not None
         ]
         if not staging:
             return None
         costs, previous = movement.search(army.tile)
-        reached = [coord for coord in staging if coord in costs]
+        country = self.state.countries[actor]
+        reached = [coord for coord in staging if coord in costs
+                   and not self._landing_claimed(country, army, coord)]
         if not reached:
             return None
         hold = min(reached, key=lambda coord: (costs[coord], coord[1], coord[0]))
@@ -1083,6 +1088,7 @@ class Military:
         present, share = self._mass(country, objective, army)
         guards = self._mass(defender, objective)[0]
         attacker_loss, defender_loss, unopposed = self._loss_plan(present, guards)
+        loss_if_defeated, defender_if_victorious, _ = self._loss_plan(present, guards, won=False)
         rout = self._rout_frame(defender, objective, present, guards)
         if rout is not None:
             # The one part of the rout book that costs a road: the hex the column would
@@ -1097,6 +1103,8 @@ class Military:
             "mass": len(present), "mass_share": round(share, 4),
             "unopposed": unopposed, "attacker_loss": attacker_loss,
             "defender_loss": defender_loss, "guards": len(guards), "rout": rout,
+            "attacker_loss_if_defeated": loss_if_defeated,
+            "defender_loss_if_victorious": defender_if_victorious,
         }
 
     def tile_strikes(self, actor: str | None, tile: tuple[int, int]) -> dict:
@@ -1274,6 +1282,10 @@ class Military:
                 "from": self._tile(army.tile), "days": None, "cost": None,
                 "expedition": False, "cost_needed": None, "days_needed": None,
             }
+            if self._stationed_other(self.state.countries[actor], army, tile):
+                row.update(reachable=False, reason="ALREADY_GARRISONED")
+                frame["rows"].append(row)
+                continue
             if army.tile == tile:
                 row.update({"reachable": True, "days": 0, "cost": 0.0,
                             "reason": "ALREADY_THERE"})
@@ -1499,6 +1511,8 @@ class Military:
         """
         if not self._marchable(defender.country_id, tile, owners):
             return None
+        if self._camps_of(defender, tile):
+            return None
         if defender.country_id not in caches:
             caches[defender.country_id] = self.movement(defender.country_id)
         movement = caches[defender.country_id]
@@ -1714,7 +1728,7 @@ class Military:
         return [
             other for other in sorted(country.armies, key=lambda item: item.army_id)
             if other.march is None and other.strength > 0 and other.tile == tile
-        ]
+        ][:1]
 
     def _attack_camp(self, attacker, defender, army, tile) -> dict:
         """Give battle to an army that has pitched itself outside its own borders.
@@ -2023,14 +2037,14 @@ class Military:
             * (self.config["expedition_factor"] if expedition else 1.0)
         )
         defense_power = (
-            self._side_value(defender.army_units, "defense", attacker.army_units, biome, False)
+            self._side_value(defender.army_units, "defense", attacker.army_units, biome, True)
             * defender_equipment
             * stability_factor(defender.stability, self.state.config)
             * defender_share
             + self.config["defense_bonus_flat"]
         )
-        attacker_loss, defender_loss, unopposed = self._loss_plan(attackers, defenders)
         won = attack_power > defense_power
+        attacker_loss, defender_loss, unopposed = self._loss_plan(attackers, defenders, won=won)
         # A rout needs a wall to happen inside of, and a garrison to break: open ground and
         # undefended gates keep the plain attrition arithmetic they always had.
         city = self._defended_city(defender, target_tile)
@@ -2139,17 +2153,13 @@ class Military:
         is standing there, which is what the 行军中敌土减速 rule promises.
         """
         budget = float(self.movement_config["daily_budget"])
+        arrivals = []
         for country in list(self.state.countries.values()):
-            ordered = sorted(country.armies, key=lambda army:
-                             (bool(army.march and army.march.rendezvous),
-                              army.march.issued_sequence if army.march else 0))
-            for army in ordered:
-                if not any(army is current for current in country.armies):
-                    continue
+            for army in list(country.armies):
                 order = army.march
                 if order is None:
                     continue
-                if army.strength <= 0 or army.tile is None or len(order.route) < 2:
+                if army.strength <= 0 or army.tile is None or not order.route:
                     self._cancel_march(country, army, "军队已无力继续行军")
                     continue
                 from_index = order.index
@@ -2161,9 +2171,43 @@ class Military:
                     continue
                 if to_index > from_index:
                     army.tile = order.route[to_index]
-                if to_index < len(order.route) - 1:
-                    continue
-                self._arrive(country, army, order)
+                if to_index == len(order.route) - 1:
+                    arrivals.append((country, army, order))
+
+        # The march book settles arrivals in order. Stage distinct friendly attack
+        # landings first so that same-day columns count in the same battle.
+        arrivals.sort(key=lambda item: (bool(item[2].rendezvous), item[2].issued_sequence))
+        occupied = {(c.country_id, a.tile) for c in self.state.countries.values()
+                    for a in c.armies if a.march is None and a.strength}
+        staged = set()
+        for country, army, order in arrivals:
+            slot = (country.country_id, army.tile)
+            if slot in occupied:
+                continue
+            if order.purpose == "ATTACK":
+                army.march = None
+                staged.add(army.army_id)
+                occupied.add(slot)
+            elif order.purpose == "MARCH":
+                occupied.add(slot)
+        fought = set()
+        for country, army, order in arrivals:
+            if country.country_id not in self.state.countries or country.find_army(army.army_id) is not army:
+                continue
+            if army.strength <= 0:
+                self._cancel_march(country, army, "军队已无力继续行军")
+                continue
+            objective = (country.country_id, order.target, order.objective)
+            defender = self.state.countries.get(order.target or "")
+            field = defender is not None and self._city_of(defender, order.objective) is None
+            if army.army_id in staged and field and objective in fought:
+                self.state.record("army_arrived", country_id=country.country_id,
+                                  army_id=army.army_id, purpose="ATTACK", fought=False,
+                                  reason="同行军队已结算会战", tile=self._tile(army.tile))
+                continue
+            outcome = self._arrive(country, army, order)
+            if outcome:
+                fought.add(objective)
 
     def _intercept_rendezvous(self, country, army, order, start, end) -> bool:
         for tile in order.route[start+1:end+1]:
@@ -2191,13 +2235,91 @@ class Military:
             reason=reason, tile=self._tile(army.tile),
         )
 
-    def _arrive(self, country, army, order: MarchOrder) -> None:
+    def _landing_claimed(self, country, army, tile):
+        return bool(self._stationed_other(country, army, tile) or any(
+            other is not army and other.march and not other.march.rendezvous
+            and other.march.destination == tile for other in country.armies
+        ))
+
+    def dispatch_projection(self, actor, orders, price):
+        """Show forecast mass by arrival day; actual control and casualties settle in play."""
+        country = self.state.countries[actor]
+        picks = {order["army_id"] for order in orders}
+        rows = []
+        reserved = set()
+        for order in orders:
+            army = country.find_army(order["army_id"])
+            if army is None or order["operation"] != "ATTACK":
+                continue
+            frame = price if price["owner"] == order["target"] else next(
+                (f for f in price["field"] if f["target"] == order["target"]), {}
+            )
+            line = next((r for r in frame.get("strikes", []) if r["army_id"] == army.army_id), None)
+            if not line or not line["reachable"]:
+                continue
+            if line["days"]:
+                defender = self.state.countries[order["target"]]
+                objective = (order["tile"]["col"], order["tile"]["row"])
+                proposal = self._approach_to(actor, army, defender, objective, reserved=reserved)
+                if proposal is None:
+                    continue
+                plan, hold, _ = proposal
+                reserved.add(hold)
+                line = {**line, "days": plan["days"], "march_target": self._tile(hold)}
+            rows.append((order, army, line))
+        result = []
+        radius = int(self.config["mass_radius"])
+        for order, army, row in rows:
+            tile = (order["tile"]["col"], order["tile"]["row"])
+            slots = {a.tile: a.strength for a in country.armies
+                     if a.army_id not in picks and a.march is None and a.tile is not None
+                     and hex_distance(a.tile, tile) <= radius}
+            for other, column, arrival in rows:
+                if other["target"] != order["target"] or arrival["days"] > row["days"]:
+                    continue
+                hold = arrival.get("march_target")
+                if hold:
+                    slots.setdefault((hold["col"], hold["row"]), column.strength)
+            share = self._mass_factor(sum(slots.values()) / max(1, country.army_strength), len(slots))
+            result.append({"army_id": army.army_id, "days": row["days"],
+                           "mass_share": round(share, 4)})
+        return result
+
+    def _stationed_other(self, country, army, tile):
+        return next((other for other in country.armies if other is not army
+                     and other.tile == tile and other.march is None and other.strength), None)
+
+    def _return_to_free_tile(self, country, army, order):
+        owners = self._owners()
+        candidates = list(reversed(order.route[:-1])) + country.tiles
+        army.tile = next((point for point in candidates
+                          if self._marchable(country.country_id, point, owners)
+                          and not self._stationed_other(country, army, point)), None)
+
+    def _arrive(self, country, army, order: MarchOrder) -> bool | None:
         """The route is paid for: the army either camps on the far tile or gives battle."""
         army.march = None
         army.arrival_day = self.state.day_index
         army.arrival_sequence = order.issued_sequence
         if order.rendezvous:
             self._finish_rendezvous(country, army, order)
+            return
+        if (self._stationed_other(country, army, army.tile) or (
+            order.purpose == "MARCH" and not self._marchable(country.country_id, army.tile, self._owners())
+        )):
+            collision = bool(self._stationed_other(country, army, army.tile))
+            code = "ALREADY_GARRISONED" if collision else "FOREIGN_GROUND"
+            reason = "目标格已有本国驻军" if collision else "目标格现已不可驻扎"
+            self._return_to_free_tile(country, army, order)
+            self.state.record("march_cancelled", country_id=country.country_id, army_id=army.army_id,
+                              reason=reason, code=code,
+                              tile=self._tile(army.tile))
+            self.state.add_receipt(
+                ActionResult(order.action_id, country.country_id, "MILITARY", False,
+                             code, reason + "，已撤回可驻地",
+                             self.state.day_index),
+                {"type": "MILITARY", "operation": order.purpose, "army_id": army.army_id},
+            )
             return
         defender = self.state.countries.get(order.target or "")
         objective = order.objective
@@ -2234,31 +2356,31 @@ class Military:
                     )
             else:
                 self._battle(country, defender, army, objective, order.expedition)
+                return True
 
     def _desert(self, army) -> str:
         """An unpaid army sheds its costliest remaining type."""
         return max(
             army.units,
             key=lambda unit_id: (
-                float(self.units[unit_id]["upkeep_per_day"]), -self.order.index(unit_id),
+                unit_food_upkeep(self.units[unit_id]), -self.order.index(unit_id),
             ),
         )
 
     def upkeep_daily(self) -> None:
         for country in self.state.countries.values():
-            for army in country.armies:
-                if army.strength <= 0:
-                    continue
-                cost = army_upkeep(army.units, self.state.config)
-                paid = min(country.treasury, cost)
-                country.treasury -= paid
-                if paid + 1e-9 < cost:
-                    unit_id = self._desert(army)
-                    self._apply_army_losses([army], {unit_id: 1})
-                    self.state.record(
-                        "army_desertion", country_id=country.country_id, army_id=army.army_id,
-                        unit=unit_id, strength=country.army_strength,
-                    )
+            cost = army_upkeep(country.army_units, self.state.config)
+            while country.army_strength and cost > country.food + 1e-9:
+                army = max((a for a in country.armies if a.strength),
+                           key=lambda a: unit_food_upkeep(self.units[self._desert(a)]))
+                unit = self._desert(army)
+                self._apply_army_losses([army], {unit: 1})
+                self.state.record("army_desertion", country_id=country.country_id,
+                                  army_id=army.army_id, unit=unit,
+                                  reason="INSUFFICIENT_FOOD", strength=country.army_strength)
+                cost = army_upkeep(country.army_units, self.state.config)
+            country.food = max(0.0, country.food - cost)
+            country.last_economy["military_food_paid"] = cost
 
     def tribute_daily(self) -> None:
         """Collect one day of occupation tribute: the payer's own treasury is the ceiling."""

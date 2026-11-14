@@ -33,13 +33,15 @@ def settle(military, count=12):
 def test_additive_capital_and_independent_errors(state):
     country, host, source, nearby = setup_armies(state)
     military = Military(state)
-    assert military.rendezvous_capacity(country, nearby[0])["capacity"] == 8
-    assert military.rendezvous_capacity(country, host.tile)["capacity"] == 12
+    assert military.rendezvous_capacity(country, nearby[0])["capacity"] == 28
+    assert military.rendezvous_capacity(country, host.tile)["capacity"] == 42
     country.buildings.clear()
-    assert military.rendezvous_capacity(country, host.tile)["capacity"] == 4
+    assert military.rendezvous_capacity(country, host.tile)["capacity"] == 14
     assert military.rendezvous_capacity(country, nearby[1])["capacity"] == 0
     country.buildings[host.tile] = "BARRACKS"
-    host.units = {"MILITIA": 4}
+    engine_config = state.config["military"]
+    engine_config["capital_extra_capacity"] = 0
+    host.units = {"MILITIA": 8, "CHARIOT": 2}
     quote = military.rendezvous_quote("ELAR", source.army_id, host.army_id,
                                       {"MILITIA": 5, "ARCHER": 2})
     assert quote["source_units"] == {"MILITIA": 3, "ARCHER": 2}
@@ -96,6 +98,7 @@ def test_missing_host_camps_without_losing_units(engine):
 def test_same_day_arrivals_recheck_shared_capacity(engine):
     country, host, source, nearby = setup_armies(engine.state, camps=0)
     other = country.new_army(nearby[1], {"MILITIA": 2})
+    engine.military.config["capital_extra_capacity"] = 4
     engine.military.movement_config["daily_budget"] = 100
     assert dispatch(engine, source, host, {"MILITIA": 2}).accepted
     assert dispatch(engine, other, host, {"MILITIA": 2}).accepted
@@ -104,7 +107,7 @@ def test_same_day_arrivals_recheck_shared_capacity(engine):
     assert country.army_strength == 9
     assert engine.military.rendezvous_capacity(country, host.tile)["room"] == 0
     codes = [r["reason_code"] for r in engine.state.receipts["ELAR"]]
-    assert codes[-2:] == ["RENDEZVOUS_MERGED", "RENDEZVOUS_CAMPED"]
+    assert codes[-2:] == ["RENDEZVOUS_MERGED", "ALREADY_GARRISONED"]
 
 def test_interception_accounts_for_every_detached_soldier(engine):
     state = engine.state

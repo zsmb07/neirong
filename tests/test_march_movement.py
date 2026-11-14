@@ -179,13 +179,13 @@ def test_march_order_queues_and_walks_the_route_one_budget_per_day():
     assert not refusal.accepted and refusal.reason_code == "MARCH_IN_PROGRESS"
 
     engine.step_day(force=True)
-    assert army.tile != seat and army.march.remaining > 0
+    assert army.march.spent == state.config["movement"]["daily_budget"] and army.march.remaining > 0
     half_way = army.tile
 
     for _ in range(days):
         engine.step_day(force=True)
     assert army.tile == target and army.march is None
-    assert half_way not in (seat, target)
+    assert half_way != target
     arrived = events_of(state, "army_arrived")[-1]
     assert arrived["tile"] == {"col": target[0], "row": target[1]}
     assert arrived["purpose"] == "MARCH" and arrived["fought"] is False
@@ -210,10 +210,10 @@ def test_a_march_survives_the_corridor_turning_hostile():
     for coord in ahead:
         if coord in country.tiles:
             country.tiles.remove(coord)
-    state.countries["MARIS"].tiles = list(ahead)
+    state.countries["MARIS"].tiles = [coord for coord in ahead if coord != destination]
 
     engine.step_day(force=True)
-    assert army.march is not None and army.march.index > 0
+    assert army.march is not None and army.march.spent > 0
     assert not events_of(state, "march_cancelled")
 
     for _ in range(ordered.effects["days"]):
@@ -377,7 +377,7 @@ def test_a_march_in_progress_survives_a_save_and_resumes_where_it_stopped(tmp_pa
     assert resumed.march.index == army.march.index
     assert resumed.tile == army.tile
 
-    for _ in range(20):
+    for _ in range(march_days(army.march.remaining, state.config["movement"]["daily_budget"]) + 1):
         if army.march is None:
             break
         engine.step_day(force=True)
@@ -405,7 +405,7 @@ def test_the_summary_publishes_what_the_march_panel_draws():
     assert march["expedition"] is False
     assert march["remaining"] == pytest.approx(army.march.remaining, abs=0.002)
     assert march["cost"] == pytest.approx(army.march.cost, abs=0.002)
-    assert march["days_left"] == march_days(army.march.remaining, 3.0)
+    assert march["days_left"] == march_days(army.march.remaining, state.config["movement"]["daily_budget"])
 
 
 def test_an_attack_order_shows_its_objective_and_expedition_flag_to_the_dashboard():

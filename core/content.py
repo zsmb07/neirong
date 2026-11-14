@@ -148,7 +148,7 @@ def _validate_tech_tree(config: dict[str, Any], fields: list[str], max_level: in
 def _validate_units(config: dict[str, Any], fields: list[str], max_level: int) -> None:
     units = config["units"]
     _require(isinstance(units, dict) and units, "units 必须是非空对象")
-    biomes = _biomes(config)
+    biomes = _biomes(config) | set(config["movement"]["biome_cost"])
     for unit_id, spec in units.items():
         where = f"兵种 {unit_id}"
         _require(isinstance(unit_id, str) and unit_id == unit_id.upper(), f"{where} 的 id 必须是大写字母")
@@ -163,7 +163,10 @@ def _validate_units(config: dict[str, Any], fields: list[str], max_level: int) -
         _require(isinstance(cost, dict) and set(cost) == {"treasury", "food"}, f"{where} 的 cost 只允许 treasury 与 food")
         _number(cost.get("treasury"), f"{where} cost.treasury", low=0.0)
         _number(cost.get("food"), f"{where} cost.food", low=0.0)
-        _number(spec.get("upkeep_per_day"), f"{where} upkeep_per_day", low=0.0)
+        _number(spec.get("upkeep_food", spec.get("upkeep_per_day")), f"{where} upkeep_food", low=0.0)
+        if "training_days" in spec:
+            _require(type(spec["training_days"]) is int and spec["training_days"] > 0,
+                     f"{where} training_days 必须是正整数")
         _technology(spec.get("required_technology"), fields, max_level, where)
         counters = spec.get("counters", {})
         _require(isinstance(counters, dict), f"{where} 的 counters 必须是对象")
@@ -173,14 +176,22 @@ def _validate_units(config: dict[str, Any], fields: list[str], max_level: int) -
             _require(modifier != 0.0, f"{where} 对 {rival} 的克制不得为 0")
         terrain = spec.get("terrain", {})
         _require(isinstance(terrain, dict), f"{where} 的 terrain 必须是对象")
+        if "training_days" in spec:
+            missing = set(config["movement"]["biome_cost"]) - terrain.keys()
+            _require(not missing, f"{where} 缺少地形 {sorted(missing)}")
         for biome in terrain:
             _require(biome in biomes, f"{where} 引用未知地形 {biome!r}")
             _number(terrain[biome], f"{where} 地形 {biome} 修正", low=0.0)
         unknown_keys = set(spec) - {
             "label", "color", "power", "defense", "max_count", "cost",
-            "upkeep_per_day", "required_technology", "counters", "terrain",
+            "upkeep_per_day", "upkeep_food", "training_days", "required_technology", "counters", "terrain",
         }
         _require(not unknown_keys, f"{where} 含未使用的键 {sorted(unknown_keys)}")
+    ladder = ("MILITIA", "ARCHER", "CHARIOT", "HEAVY_INFANTRY", "CAVALRY", "SIEGE")
+    days = [units[key].get("training_days") for key in ladder if key in units]
+    if any(day is not None for day in days):
+        _require(all(day is not None for day in days) and all(a < b for a, b in zip(days, days[1:])),
+                 "兵种 training_days 必须从民兵到攻城逐档增加")
     military = config["military"]
     default_unit = military.get("default_unit")
     _require(default_unit in units, f"military.default_unit {default_unit!r} 不在 units 表中")
@@ -199,6 +210,10 @@ def _validate_military(config: dict[str, Any]) -> None:
     _require(isinstance(military, dict), "military 必须是对象")
     extra = military.get("capital_extra_capacity", 4)
     _require(type(extra) is int and extra >= 0, "military.capital_extra_capacity 必须是非负整数")
+    if "victor_loss_rate" in military:
+        victor = _number(military["victor_loss_rate"], "military.victor_loss_rate", low=0, high=1)
+        loser = _number(military.get("loser_loss_rate"), "military.loser_loss_rate", low=0, high=1)
+        _require(victor < loser, "胜方损耗率必须低于败方")
     for key in MILITARY_NUMERIC:
         _require(key in military, f"military 缺少 {key}")
         _number(military[key], f"military.{key}")
@@ -458,28 +473,27 @@ def army_strength(units: dict[str, int]) -> int:
     return sum(int(count) for count in units.values() if int(count) > 0)
 
 
+def unit_food_upkeep(spec: dict) -> float:
+    return float(spec.get("upkeep_food", spec.get("upkeep_per_day", 0)))
+
+
+def training_days(config: dict, unit: str) -> float:
+    spec = config["units"][unit]
+    return spec.get("training_days") or spec["cost"]["treasury"] / config["military"]["barracks"]["daily_cost"]
+
+
 def army_upkeep(units: dict[str, int], config: dict[str, Any]) -> float:
     table = config["units"]
     return sum(
-        int(count) * float(table[unit_id]["upkeep_per_day"])
+        int(count) * unit_food_upkeep(table[unit_id])
         for unit_id, count in units.items()
         if unit_id in table and int(count) > 0
     )
 
 
-def field_cap(building_ids: Iterable[str], config: dict[str, Any]) -> int:
-    """How many units a realm may keep under arms.
-
-    One barracks trains a fixed garrison; how many barracks a realm finishes is its own
-    choice, so the ceiling is the camps it actually holds. `maximum_strength` is the floor
-    a realm with no barracks at all still commands.
-    """
-    military = config["military"]
-    barracks = sum(building == "BARRACKS" for building in building_ids)
-    return max(
-        int(military["maximum_strength"]),
-        barracks * int(military["barracks"]["garrison_capacity"]),
-    )
+def field_cap(building_ids: Iterable[str], config: dict[str, Any]) -> int | None:
+    """There is no national numerical ceiling."""
+    return None
 
 
 def normalize_roster(units: Any, config: dict[str, Any]) -> dict[str, int]:
@@ -562,9 +576,9 @@ def validate_content(config: dict[str, Any], world_biomes: set[str] | None = Non
         _require(key in config, f"rules.json 缺少内容表 {key}")
     _validate_buildings(config, fields, max_level)
     _validate_tech_tree(config, fields, max_level)
+    _validate_movement(config, world_biomes or set())
     _validate_units(config, fields, max_level)
     _validate_military(config)
-    _validate_movement(config, world_biomes or set())
     _validate_eras(config, max_level)
     _validate_city_tables(config)
     _validate_policies_and_workers(config)

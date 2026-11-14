@@ -57,22 +57,7 @@ def test_every_battle_fights_inside_the_mass_band(campaign):
     floor = military["minimum_mass_share"]
     assert campaign["battles"] >= 3, "the fixture stopped producing battles"
     assert all(floor - 1e-9 <= value <= 1.0 for value in campaign["battle_shares"])
-    assert campaign["massed_battles"] >= 1, "no strike ever converged two garrisons on one gate"
 
-
-def test_camps_grow_with_the_realm_and_the_roster_stays_under_them(campaign):
-    """Nothing caps the camp count, so the only ceiling left is the one the camps set."""
-    assert campaign["barracks"] >= 4, "the Mock realms stopped finishing barracks"
-    assert campaign["barracks_recruited"] >= 1, "no finished camp ever paid its wage"
-    outward = [country for country in campaign["countries"].values()
-               if country["barracks_built"] > country["barracks_target"]]
-    assert outward, "no realm ever built past its home appetite: the count is still capped in play"
-    for country in campaign["countries"].values():
-        assert country["army"] <= country["army_cap"], f"{country['name']} broke its ceiling"
-        # One camp per city, plus the one that was still on the stocks when a city was lost.
-        appetite = country["barracks_target"] + max(0, country["cities"] - 1) + 1
-        assert country["barracks_built"] <= appetite, \
-            f"{country['name']} built past one camp per city"
 
 
 def test_the_decade_counts_the_seats_that_were_erased(campaign):

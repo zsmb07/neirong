@@ -89,7 +89,7 @@ def validate_action(actor: str, raw: Any, config: dict[str, Any]) -> dict[str, A
     _keys(raw, {"type", "tile", "building", "agriculture", "mining", "construction",
                 "rate", "field", "priority", "operation", "target", "offer_food",
                 "request_treasury", "proposal_id", "amount", "pact", "strength", "unit",
-                "focus", "city_id", "zone", "managed_by", "budget", "army_id", "recruiting", "host_id", "units"})
+                "focus", "city_id", "zone", "managed_by", "budget", "army_id", "recruiting", "host_id", "units", "orders"})
 
     if action_type == "NO_OP":
         _keys(raw, {"type"})
@@ -161,11 +161,25 @@ def validate_action(actor: str, raw: Any, config: dict[str, Any]) -> dict[str, A
         return {"type": action_type, "city_id": city_id, "budget": budget}
     if action_type == "MILITARY":
         _keys(raw, {"type", "operation", "tile", "strength", "target", "unit",
-                    "army_id", "recruiting", "host_id", "units"})
+                    "army_id", "recruiting", "host_id", "units", "orders"})
         operation = raw.get("operation")
         army_id = raw.get("army_id")
         if army_id is not None and (not isinstance(army_id, str) or not army_id):
             raise ActionRejected("INVALID_PARAMETER", "army_id 必须是非空字符串或省略")
+        if operation == "DISPATCH":
+            _keys(raw, {"type", "operation", "orders"})
+            orders = raw.get("orders")
+            if not isinstance(orders, list) or not 1 <= len(orders) <= 200:
+                raise ActionRejected("INVALID_PARAMETER", "请选择 1 至 200 支军队")
+            if any(not isinstance(o, dict) or o.get("type") != "MILITARY"
+                   or o.get("operation") not in ("MARCH", "ATTACK", "RENDEZVOUS")
+                   for o in orders):
+                raise ActionRejected("INVALID_PARAMETER", "派兵只接受驻扎、攻打或会师")
+            validated = [validate_action(actor, o, config) for o in orders]
+            ids = [o.get("army_id") for o in validated]
+            if None in ids or len(set(ids)) != len(ids):
+                raise ActionRejected("INVALID_PARAMETER", "每支军队只能选择一次")
+            return {"type": action_type, "operation": operation, "orders": validated}
         if operation == "RENDEZVOUS":
             _keys(raw, {"type", "operation", "army_id", "host_id", "units"})
             host = raw.get("host_id")

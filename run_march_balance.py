@@ -241,7 +241,8 @@ def run_one(seed: int, assignment: list[str], scenario: dict) -> dict:
                 "territory": len(country["tiles"]),
                 "cities": len(country.get("cities", [])),
                 "army": country["army_strength"],
-                "army_cap": country.get("army_cap", 0),
+                "capital_capacity": next((c["military_capacity"] for c in country["cities"] if c["capital"]), 0),
+                "army_food_daily": country["military_upkeep_food"],
                 "treasury": round(country["treasury"], 1),
                 "score": round(country.get("total", 0.0), 1),
                 "marches": len(own_marches),
@@ -644,7 +645,7 @@ def write_report(runs: list[dict], agg: dict, generated_at: str) -> None:
 
 ## 6. 兵营规模与集结
 
-兵营每营只练 `military.barracks.garrison_capacity` 支的固定定额，而 `buildings.BARRACKS`
+兵营每座每日提供 1 点训练进度，集中给同一支军队。`buildings.BARRACKS`
 不再写 `max_per_country`：全国修几座是国家的抉择，全国编制上限随之抬升。会战则按
 `military.mass_radius` 格内到场的军队折算，`minimum_mass_share` 是单独一支军队的保底系数。
 两个新场景把兵营愿望分别抬到 6 座与压到 0 座，用来确认放开上限改变的是规模与集结，

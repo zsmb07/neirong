@@ -326,13 +326,24 @@
       "defense": 1.0,
       "max_count": 8,
       "cost": {
-        "treasury": 12.5,
-        "food": 3.0
+        "treasury": 2,
+        "food": 3.75
       },
-      "upkeep_per_day": 0.018,
       "required_technology": null,
       "counters": {},
-      "terrain": {}
+      "terrain": {
+        "grassland": 1.0,
+        "steppe": 1.0,
+        "savanna": 1.0,
+        "wetland": 1.0,
+        "forest": 1.0,
+        "desert": 1.0,
+        "tundra": 1.0,
+        "rainforest": 1.0,
+        "alpine": 1.0
+      },
+      "training_days": 260,
+      "upkeep_food": 0.0288
     },
     "ARCHER": {
       "label": "投射弓手",
@@ -341,10 +352,9 @@
       "defense": 0.95,
       "max_count": 6,
       "cost": {
-        "treasury": 15.0,
-        "food": 3.5
+        "treasury": 2.5,
+        "food": 4.38
       },
-      "upkeep_per_day": 0.02,
       "required_technology": {
         "field": "bronze_metallurgy",
         "level": 1
@@ -355,10 +365,18 @@
         "HEAVY_INFANTRY": -0.2
       },
       "terrain": {
-        "forest": 1.1,
-        "desert": 0.9,
-        "wetland": 0.85
-      }
+        "grassland": 1.0,
+        "steppe": 1.0,
+        "savanna": 1.0,
+        "wetland": 0.73,
+        "forest": 1.18,
+        "desert": 0.82,
+        "tundra": 1.0,
+        "rainforest": 1.0,
+        "alpine": 1.0
+      },
+      "training_days": 320,
+      "upkeep_food": 0.032
     },
     "CHARIOT": {
       "label": "青铜战车",
@@ -367,10 +385,9 @@
       "defense": 0.9,
       "max_count": 4,
       "cost": {
-        "treasury": 23.75,
-        "food": 5.0
+        "treasury": 3,
+        "food": 6.25
       },
-      "upkeep_per_day": 0.028,
       "required_technology": {
         "field": "bronze_metallurgy",
         "level": 2
@@ -382,12 +399,18 @@
         "CAVALRY": -0.2
       },
       "terrain": {
-        "steppe": 1.15,
-        "savanna": 1.15,
-        "forest": 0.6,
-        "alpine": 0.5,
-        "wetland": 0.7
-      }
+        "grassland": 1.0,
+        "steppe": 1.27,
+        "savanna": 1.27,
+        "wetland": 0.46,
+        "forest": 0.28,
+        "desert": 1.0,
+        "tundra": 1.0,
+        "rainforest": 1.0,
+        "alpine": 0.25
+      },
+      "training_days": 390,
+      "upkeep_food": 0.0448
     },
     "HEAVY_INFANTRY": {
       "label": "重装步兵",
@@ -396,10 +419,9 @@
       "defense": 1.3,
       "max_count": 5,
       "cost": {
-        "treasury": 21.25,
-        "food": 4.0
+        "treasury": 3.5,
+        "food": 5.0
       },
-      "upkeep_per_day": 0.025,
       "required_technology": {
         "field": "writing",
         "level": 3
@@ -410,10 +432,18 @@
         "ARCHER": 0.1
       },
       "terrain": {
-        "grassland": 1.1,
-        "forest": 0.85,
-        "alpine": 0.8
-      }
+        "grassland": 1.18,
+        "steppe": 1.0,
+        "savanna": 1.0,
+        "wetland": 1.0,
+        "forest": 0.73,
+        "desert": 1.0,
+        "tundra": 1.0,
+        "rainforest": 1.0,
+        "alpine": 0.64
+      },
+      "training_days": 470,
+      "upkeep_food": 0.04
     },
     "CAVALRY": {
       "label": "马上贵族",
@@ -422,10 +452,9 @@
       "defense": 0.85,
       "max_count": 4,
       "cost": {
-        "treasury": 28.75,
-        "food": 6.0
+        "treasury": 4,
+        "food": 7.5
       },
-      "upkeep_per_day": 0.033,
       "required_technology": {
         "field": "agriculture",
         "level": 3
@@ -437,13 +466,18 @@
         "HEAVY_INFANTRY": -0.3
       },
       "terrain": {
-        "steppe": 1.2,
-        "grassland": 1.1,
-        "savanna": 1.1,
-        "forest": 0.7,
-        "alpine": 0.6,
-        "wetland": 0.75
-      }
+        "grassland": 1.18,
+        "steppe": 1.36,
+        "savanna": 1.18,
+        "wetland": 0.55,
+        "forest": 0.46,
+        "desert": 1.0,
+        "tundra": 1.0,
+        "rainforest": 1.0,
+        "alpine": 0.28
+      },
+      "training_days": 560,
+      "upkeep_food": 0.0528
     },
     "SIEGE": {
       "label": "攻城器械",
@@ -452,10 +486,9 @@
       "defense": 0.6,
       "max_count": 3,
       "cost": {
-        "treasury": 37.5,
-        "food": 6.0
+        "treasury": 5,
+        "food": 7.5
       },
-      "upkeep_per_day": 0.036,
       "required_technology": {
         "field": "bronze_metallurgy",
         "level": 4
@@ -465,11 +498,18 @@
         "CAVALRY": -0.35
       },
       "terrain": {
-        "forest": 0.7,
-        "desert": 0.75,
-        "alpine": 0.65,
-        "tundra": 0.65
-      }
+        "grassland": 1.0,
+        "steppe": 1.0,
+        "savanna": 1.0,
+        "wetland": 1.0,
+        "forest": 0.46,
+        "desert": 0.55,
+        "tundra": 0.37,
+        "rainforest": 1.0,
+        "alpine": 0.37
+      },
+      "training_days": 700,
+      "upkeep_food": 0.0576
     }
   },
   "city_zones": {
@@ -675,12 +715,12 @@
   "building_upkeep_per_day": 0.004,
   "military": {
     "maximum_strength": 12,
-    "capital_extra_capacity": 4,
+    "capital_extra_capacity": 14,
     "recruit_batch_max": 4,
     "default_unit": "MILITIA",
     "attacker_loss_rate": 0.32,
     "defender_loss_rate": 0.38,
-    "unopposed_loss_rate": 0.08,
+    "unopposed_loss_rate": 0.02,
     "defense_bonus_flat": 1.5,
     "expedition_factor": 0.78,
     "metallurgy_power_per_level": 0.04,
@@ -700,9 +740,11 @@
     "capture_tribute_days": 180,
     "capture_tribute_cap": 0.08,
     "capture_tribute_resolve": 25.0,
-    "capture_tribute_exempt": ["ROAD"],
+    "capture_tribute_exempt": [
+      "ROAD"
+    ],
     "barracks": {
-      "daily_cost": 0.5,
+      "daily_cost": 0.01,
       "garrison_capacity": 4,
       "default_unit": "MILITIA",
       "progress_cap_ratio": 1.0,
@@ -726,10 +768,12 @@
       "survivor_rate": 0.4,
       "barracks_lost_survivor_rate": 0.0,
       "retreat_radius": 1
-    }
+    },
+    "victor_loss_rate": 0.04,
+    "loser_loss_rate": 0.42
   },
   "movement": {
-    "daily_budget": 3.0,
+    "daily_budget": 0.75,
     "road_cost": 0.35,
     "hostile_cost": 1.25,
     "maximum_order_cost": 60.0,

@@ -365,6 +365,19 @@ class RuleEngine:
                 return self.military.recruit(
                     actor, action["unit"], action["strength"], action.get("army_id")
                 )
+            if operation == "DISPATCH":
+                rows = []
+                for order in action["orders"]:
+                    try:
+                        effects = self._execute(actor, order)
+                        rows.append({"army_id": order["army_id"], "accepted": True, "effects": effects})
+                    except ActionRejected as exc:
+                        rows.append({"army_id": order["army_id"], "accepted": False,
+                                     "code": exc.code, "reason": exc.text})
+                if not any(row["accepted"] for row in rows):
+                    raise ActionRejected(rows[0]["code"], "；".join(
+                        f"{row['army_id']}：{row['reason']}" for row in rows))
+                return {"orders": rows}
             if operation == "RENDEZVOUS":
                 return self.military.rendezvous(
                     actor, action["army_id"], action["host_id"], action["units"]

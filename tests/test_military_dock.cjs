@@ -24,7 +24,7 @@ test('technology, national roster, camp capacity and food gates remain visible',
   const {c,option,quote}=setup();
   assert.equal(quote(c,null,{...option,unlocked:false,reason:'需要科技'},1).reason,'需要科技');
   assert.equal(quote(c,null,{...option,room:0},1).enabled,false);
-  assert.equal(quote(c,{barracks:true,strength:4},option,1).reason,'兵营定额已满');
+  assert.equal(quote(c,{tile_room:0},option,1).reason,'驻格容量不足');
   assert.equal(quote({...c,food:2},null,option,1).reason,'粮食不足');
   assert.equal(quote(c,{barracks:false,strength:4},option,1).enabled,true);
 });
@@ -107,4 +107,21 @@ test('rendezvous creates one slider per unit, revalidates on input and only conf
   assert.equal(orders.length,1);
   assert.deepEqual(orders[0].units,{MILITIA:0,ARCHER:1});
   assert.equal(get('rendezvousDialog').open,false);
+});
+
+
+test('tile shows the intent before exposing individual army rows',()=>{
+  const context={STATE:{player_country:'A'},tileGarrisonAt:()=>[],countryMeta:id=>({name:id}),esc:x=>x};
+  vm.createContext(context);
+  const march=html.slice(html.indexOf('function tileMarchCard('),html.indexOf('function tileFieldCard('));
+  const attack=html.slice(html.indexOf('function tileStrikeCard('),html.indexOf('function hostilePaceText('));
+  vm.runInContext(march+attack,context);
+  const tile={col:1,row:2,land:true,owner:null};
+  const pricing={march:{rows:[{army_id:'A1',days:6}]},field:[],garrison:[]};
+  assert.match(context.tileMarchCard(tile,pricing),/驻扎/);
+  assert.doesNotMatch(context.tileMarchCard(tile,pricing),/A1|6 日/);
+  pricing.garrison.push({country_id:'A',strength:3});
+  assert.match(context.tileMarchCard(tile,pricing),/会师/);
+  assert.match(context.tileStrikeCard({...tile,owner:'B'},{at_war:false}),/宣战/);
+  assert.match(context.tileStrikeCard({...tile,owner:'B'},{at_war:true,strikes:[{army_id:'A1'}]}),/攻打/);
 });

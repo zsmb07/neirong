@@ -28,8 +28,8 @@ from core.state import (
 # 面板上的 reason 对应引擎拒绝同一个订单时的 reason_code；
 # 「需「科技」N 级」这类写法带变量，因此按 TECHNOLOGY_REQUIRED 单独处理。
 GATE_CODES = {
-    "全国编制已满": "ARMY_LIMIT",
-    "已达编成上限": "UNIT_LIMIT",
+    "驻格容量不足": "CAPACITY_LIMIT",
+    "该兵种名额已满": "UNIT_LIMIT",
     "财政不足": "INSUFFICIENT_TREASURY",
     "粮食不足": "INSUFFICIENT_FOOD",
 }
@@ -62,7 +62,7 @@ def camp_on(engine: RuleEngine, country_id: str = "ELAR", units: dict | None = N
     country = pay_up(engine.state.countries[country_id])
     tile = next(coord for coord in country.tiles if coord not in country.buildings)
     country.buildings[tile] = "BARRACKS"
-    army = country.new_army(tile=tile, units=dict(units or {}), recruiting=True)
+    army = country.new_army(tile=tile, units=dict({"MILITIA": 1} if units is None else units), recruiting=True)
     return tile, army
 
 
@@ -105,25 +105,21 @@ def test_camp_report_counts_the_soldier_it_handed_over():
     engine = engine_of()
     config = engine.state.config
     tile, army = camp_on(engine)
-    price = float(config["units"]["MILITIA"]["cost"]["treasury"])
-    wage = float(config["military"]["barracks"]["daily_cost"])
-    wait = math.ceil(price / wage)
-
-    for _ in range(wait - 1):
-        engine.step_day()
+    wait = config["units"]["MILITIA"]["training_days"]
+    army.progress = wait - 1
     almost = report_at(engine, tile)
     assert almost["army_id"] == army.army_id
     assert almost["unit"] == "MILITIA" and almost["stall"] == ""
-    assert almost["raised"] == 0 and almost["strength"] == 0
+    assert almost["raised"] == 0 and almost["strength"] == 1
     assert almost["days_left"] == 1
 
     engine.step_day()
     done = report_at(engine, tile)
     assert done["raised"] == 1 == army.raised
-    assert done["strength"] == 1 and army.units["MILITIA"] == 1
+    assert done["strength"] == 2 and army.units["MILITIA"] == 2
     assert done["progress"] == 0.0
     assert done["days_left"] == wait
-    assert done["room"] == int(config["military"]["barracks"]["garrison_capacity"]) - 1
+    assert done["room"] == config["units"]["MILITIA"]["max_count"] - 2
     assert events_of(engine.state, "barracks_recruit")[-1]["unit"] == "MILITIA"
 
 
@@ -143,7 +139,7 @@ def test_camp_report_is_live_not_the_last_settlement_answer():
 
     army.recruiting = True
     army.progress = 0.0
-    state.countries["ELAR"].treasury = 0.3
+    state.countries["ELAR"].treasury = 0.0
     broke = report_at(engine, tile)
     assert broke["stall"] == "INSUFFICIENT_WAGE"
     assert recruit_stall(state.countries["ELAR"], army, "MILITIA", state.config) == "INSUFFICIENT_WAGE"
@@ -156,9 +152,9 @@ def test_an_involuntary_stop_is_announced_once_and_pausing_is_quiet():
     tile, army = camp_on(engine)
     for _ in range(6):
         engine.step_day()
-    state.countries["ELAR"].treasury = 0.2
+    state.countries["ELAR"].treasury = 0.0
     for _ in range(4):
-        engine.step_day()
+        engine.military.barracks_daily()
 
     assert report_at(engine, tile)["stall"] == "INSUFFICIENT_WAGE"
     assert stalled_events(state, "INSUFFICIENT_WAGE", army.army_id) == stalled_events(state)
@@ -183,16 +179,19 @@ def test_one_camp_complains_about_the_same_reason_once_per_cooldown():
     cooldown = 20
     state.config["military"]["barracks"]["stall_notice_days"] = cooldown
 
-    country.treasury = 0.2
-    engine.step_day()
+    country.treasury = 0.0
+    engine.military.barracks_daily()
+    state.day_index += 1
     assert stalled_events(state, "INSUFFICIENT_WAGE", army.army_id), "第一次付不起要说一次"
 
     # 五轮「付得起 / 付不起」= 10 日，全在冷却里：面板照样读得到原因，新闻不再重复。
     for _ in range(5):
         country.treasury = 5.0
-        engine.step_day()
-        country.treasury = 0.2
-        engine.step_day()
+        engine.military.barracks_daily()
+        state.day_index += 1
+        country.treasury = 0.0
+        engine.military.barracks_daily()
+        state.day_index += 1
     announced = len(stalled_events(state, "INSUFFICIENT_WAGE", army.army_id))
     assert announced == 1
     assert report_at(engine, tile)["stall"] == "INSUFFICIENT_WAGE"
@@ -200,31 +199,12 @@ def test_one_camp_complains_about_the_same_reason_once_per_cooldown():
     # 冷却过后同一条理由可以再说一遍。
     for _ in range(6):
         country.treasury = 5.0
-        engine.step_day()
-        country.treasury = 0.2
-        engine.step_day()
+        engine.military.barracks_daily()
+        state.day_index += 1
+        country.treasury = 0.0
+        engine.military.barracks_daily()
+        state.day_index += 1
     assert len(stalled_events(state, "INSUFFICIENT_WAGE", army.army_id)) == announced + 1
-
-
-def test_the_camp_quota_refuses_a_manual_order_but_not_a_field_army():
-    """定额只约束站在兵营里的那支军队；野战军队照旧按全国编制募兵。"""
-    engine = engine_of()
-    state = engine.state
-    capacity = int(state.config["military"]["barracks"]["garrison_capacity"])
-    tile, army = camp_on(engine, units={"MILITIA": capacity})
-    assert army.strength == capacity
-
-    refused = engine.apply_action("ELAR", recruit("ARCHER", 1, army.army_id))
-    assert not refused.accepted and refused.reason_code == "GARRISON_LIMIT"
-
-    country = state.countries["ELAR"]
-    away = country.new_army(
-        tile=next(coord for coord in country.tiles if coord not in country.buildings),
-        units={"MILITIA": capacity},
-    )
-    grown = engine.apply_action("ELAR", recruit("ARCHER", 1, away.army_id))
-    assert grown.accepted, grown.reason_text
-    assert away.strength == capacity + 1
 
 
 def test_recruit_option_reason_is_the_gate_the_engine_will_use():
@@ -259,14 +239,14 @@ def test_recruit_option_reason_is_the_gate_the_engine_will_use():
     maxed = int(state.config["units"]["MILITIA"]["max_count"])
     country.new_army(units={"MILITIA": maxed})
     full = option_rows(country, state.config)["MILITIA"]
-    assert full["reason"] == "已达编成上限" and full["batch"] == 0
+    assert full["reason"] == "该兵种名额已满" and full["batch"] == 0
     assert engine.apply_action("ELAR", recruit("MILITIA", 1)).reason_code == "UNIT_LIMIT"
 
     country.armies = []
     country.new_army(units={"MILITIA": maxed, "ARCHER": 4})
-    capped = option_rows(country, state.config)["ARCHER"]
-    assert capped["reason"] == "全国编制已满"
-    assert engine.apply_action("ELAR", recruit("ARCHER", 1)).reason_code == "ARMY_LIMIT"
+    row = option_rows(country, state.config)["ARCHER"]
+    assert row["batch"] == 2
+    assert engine.apply_action("ELAR", recruit("ARCHER", 2)).accepted
 
 
 def test_every_order_leaves_a_receipt_and_the_ledger_stays_bounded():
@@ -302,7 +282,7 @@ def test_receipts_survive_the_save_and_do_not_move_the_fingerprint(tmp_path):
     state = engine.state
     pay_up(state.countries["ELAR"])
     assert engine.apply_action("ELAR", recruit("MILITIA", 2)).accepted
-    state.countries["ELAR"].treasury = 5.0
+    state.countries["ELAR"].treasury = 4.0
     assert not engine.apply_action("ELAR", recruit("SIEGE", 1)).accepted
     fingerprint = state.fingerprint()
 
@@ -411,29 +391,21 @@ def test_trades_join_the_same_ledger_as_pacts():
     assert any(item["action_type"] == "TRADE" for item in state.receipts["MARIS"])
 
 
-def test_barracks_reports_cover_every_camp_the_realm_operates():
-    """一营一行，三种停摆各归各位：面板才数得出「几座在练、几座停着」。"""
+def test_barracks_reports_share_one_staffed_training_pool():
     engine = engine_of()
     state = engine.state
     country = pay_up(state.countries["ELAR"])
     country.armies = []
-    capacity = int(state.config["military"]["barracks"]["garrison_capacity"])
-    tiles = [coord for coord in country.tiles if coord not in country.buildings][:3]
-    for tile in tiles:
-        country.buildings[tile] = "BARRACKS"
-
-    empty = country.new_army(tile=tiles[0], units={}, recruiting=True)
-    full = country.new_army(tile=tiles[1], units={"MILITIA": capacity}, recruiting=True)
-    idle = country.new_army(tile=tiles[2], units={"MILITIA": 2}, recruiting=False)
-
-    reports = {tuple(row["tile"]): row for row in barracks_reports(country, state.config)}
-    assert len(reports) == 3
-    assert reports[tiles[0]]["stall"] == "" and reports[tiles[0]]["army_id"] == empty.army_id
-    assert reports[tiles[1]]["stall"] == "GARRISON_LIMIT"
-    assert reports[tiles[2]]["stall"] == "PAUSED" and reports[tiles[2]]["days_left"] is None
-    assert camp_garrison(country, tiles[1], state.config).army_id == full.army_id
-    assert camp_garrison(country, tiles[2], state.config).army_id == idle.army_id
-    assert country.army_strength == capacity + 2
+    tiles = country.tiles[:3]
+    country.buildings.update({tile: "BARRACKS" for tile in tiles})
+    country.new_army(tile=tiles[0], units={}, recruiting=True)
+    target = country.new_army(tile=tiles[1], units={"MILITIA": 1}, recruiting=True)
+    queued = country.new_army(tile=tiles[2], units={"MILITIA": 1}, recruiting=True)
+    engine.military.barracks_daily()
+    reports = barracks_reports(country, state.config)
+    assert {report["training_army_id"] for report in reports} == {target.army_id}
+    assert {report["progress_per_day"] for report in reports} == {3}
+    assert target.progress == 3 and queued.progress == 0
 
 
 def test_the_observation_and_the_prompt_read_the_same_fields():

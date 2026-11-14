@@ -448,5 +448,5 @@ def test_the_tile_panel_reads_garrisons_and_prices_from_the_engine():
     assert "NOT_AT_WAR:'" in dashboard and "CITY_CENTER" not in dashboard, (
         "a city center is no longer refused: it opens a blockade"
     )
-    assert "data-strike=" in dashboard and "${row.reachable?'':'disabled'}" in dashboard
+    assert 'data-tile-intent="attack"' in dashboard and 'id="tileDispatchDialog"' in dashboard
     assert "if(tileStrikeKey!==key)return;" in dashboard, "a late answer must not paint a new tile"
