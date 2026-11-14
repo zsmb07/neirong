@@ -2208,7 +2208,7 @@ async function openTileDispatch(intent,tile,price){
       const q=row.quote;
       return `<fieldset><legend><label><input type="checkbox" data-dispatch="${index}"> ${esc(row.army_id)}</label></legend>
         <small>源军 ${q.source_strength} 支 · 宿主还能装 ${q.room} 支 · 最多可派 ${q.maximum} 支 · ${q.days==null?"不可达":q.days+" 日抵达"}</small>
-        ${Object.entries(q.source_units).map(([unit,count])=>`<label class="build-option row">${esc(q.source_labels[unit])} <input aria-label="${esc(q.source_labels[unit])}" type="range" data-dispatch-unit="${unit}" min="0" max="${count}" value="0"><output>0 / ${count}</output></label>`).join('')}
+        ${Object.entries(q.source_units).map(([unit,count])=>`<label class="build-option row">${esc(q.source_labels[unit])} <input aria-label="${esc(q.source_labels[unit])}" type="range" data-dispatch-unit="${unit}" min="0" max="${count}" value="${count}"><output>${count} / ${count}</output></label>`).join('')}
         <p role="status"></p></fieldset>`;
     }
     return `<label class="build-option row"><span><b>${esc(row.army_id)}</b> · ${row.days==null?'不可达':row.days+' 日抵达'}
@@ -2234,16 +2234,25 @@ async function openTileDispatch(intent,tile,price){
     const ids=new Set(orders.map(order=>order.army_id));
     let valid=orders.length>0&&ids.size===orders.length;
     if(intent==='meet'){
-      const results=await Promise.all(orders.map(order=>fetch('/api/rendezvous_preview',{
-        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(order)
-      }).then(r=>r.json()).catch(()=>({ok:false,error:'无法重新报价'}))));
-      if(ticket!==revision||!dialog.open)return;
-      for(const [index,data] of results.entries()){
-        const row=orders[index];
-        const field=[...list.querySelectorAll('fieldset')].find(f=>choices[Number(f.querySelector('[data-dispatch]').dataset.dispatch)].army_id===row.army_id);
-        const errors=data.ok?data.quote.errors.map(e=>e.text):[data.error];
-        field.querySelector('[role="status"]').textContent=errors.join('；');
-        if(errors.length)valid=false;
+      const preview=$('tileDispatchPreview');
+      preview.textContent='勾选即整支派出，可拖动滑块改为部分派兵。抵达后并入目标格驻军。';
+      for(const field of list.querySelectorAll('fieldset'))field.querySelector('[role="status"]').textContent='';
+      if(valid){
+        const data=await fetch('/api/dispatch_preview',{
+          method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({orders})
+        }).then(r=>r.json()).catch(()=>({ok:false,error:'无法重新报价'}));
+        if(ticket!==revision||!dialog.open)return;
+        if(!data.ok){
+          preview.textContent=data.error;
+          valid=false;
+        }else{
+          for(const row of data.rows){
+            const field=[...list.querySelectorAll('fieldset')].find(f=>choices[Number(f.querySelector('[data-dispatch]').dataset.dispatch)].army_id===row.army_id);
+            field.querySelector('[role="status"]').textContent=row.errors.map(e=>e.text).join('；');
+          }
+          if(data.errors.length)preview.textContent='合计派兵：'+data.errors.map(e=>e.text).join('；');
+          valid=!data.errors.length&&data.rows.every(row=>!row.errors.length);
+        }
       }
     }
     if(intent==='attack'){
@@ -2269,7 +2278,7 @@ async function openTileDispatch(intent,tile,price){
     if(sending||confirm.disabled)return;
     sending=true;confirm.disabled=true;
     try{
-      if(await submitPlayerAction({type:'MILITARY',operation:'DISPATCH',orders},'派兵命令已提交'))dialog.close();
+      if(await submitPlayerAction({type:'MILITARY',operation:'DISPATCH',orders},intent==='meet'?'会师令已下达，抵达后合并为一支军队':'派兵命令已提交'))dialog.close();
     }finally{sending=false;if(dialog.open)validate();}
   };
   dialog.showModal();

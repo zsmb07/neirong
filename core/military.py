@@ -641,6 +641,22 @@ class Military:
             "errors": errors,
         }
 
+    def rendezvous_batch_quote(self, actor: str, orders: list[dict]) -> dict:
+        hosts = {order["host_id"] for order in orders}
+        if len(hosts) != 1 or any(order["army_id"] in hosts for order in orders):
+            raise ActionRejected("INVALID_RENDEZVOUS", "请让所选军队会师到同一支宿主")
+        quotes = [self.rendezvous_quote(actor, order["army_id"], order["host_id"], order["units"])
+                  for order in orders]
+        combined: dict[str, int] = {}
+        for order in orders:
+            for unit, count in order["units"].items():
+                combined[unit] = combined.get(unit, 0) + count
+        return {
+            "rows": [{"army_id": o["army_id"], "errors": q["errors"]}
+                     for o, q in zip(orders, quotes)],
+            "errors": self._rendezvous_errors(combined, combined, quotes[0]),
+        }
+
     def rendezvous(self, actor: str, source_id: str, host_id: str, units: dict) -> dict:
         country = self.state.countries[actor]
         quote = self.rendezvous_quote(actor, source_id, host_id, units)

@@ -152,3 +152,29 @@ def test_split_counts_source_at_its_old_tile_and_arrival_at_its_new_tile(engine)
     settle(engine.military)
     present, _ = engine.military._mass(country, host.tile)
     assert host in present and host.strength == 4 and source.strength == 3
+
+
+def test_selected_full_armies_merge_into_one_garrison(engine):
+    country, host, source, nearby = setup_armies(engine.state)
+    other = country.new_army(nearby[1], {"MILITIA": 2})
+    orders = [{"type": "MILITARY", "operation": "RENDEZVOUS",
+               "army_id": a.army_id, "host_id": host.army_id, "units": dict(a.units)}
+              for a in (source, other)]
+    result = engine.apply_action("ELAR", {"type": "MILITARY", "operation": "DISPATCH", "orders": orders})
+    assert result.accepted, result.reason_text
+    settle(engine.military)
+    assert country.armies == [host]
+    assert host.units == {"MILITIA": 7, "ARCHER": 2}
+    assert set(country.army_tombstones) == {source.army_id, other.army_id}
+
+
+def test_batch_checks_combined_capacity_before_dispatching(engine):
+    country, host, source, nearby = setup_armies(engine.state, camps=0)
+    engine.military.config["capital_extra_capacity"] = 4
+    other = country.new_army(nearby[1], {"MILITIA": 2})
+    orders = [{"type": "MILITARY", "operation": "RENDEZVOUS",
+               "army_id": a.army_id, "host_id": host.army_id, "units": {"MILITIA": 2}}
+              for a in (source, other)]
+    result = engine.apply_action("ELAR", {"type": "MILITARY", "operation": "DISPATCH", "orders": orders})
+    assert result.reason_code == "HOST_CAPACITY"
+    assert len(country.armies) == 3 and not any(a.march for a in country.armies)

@@ -366,6 +366,11 @@ class RuleEngine:
                     actor, action["unit"], action["strength"], action.get("army_id")
                 )
             if operation == "DISPATCH":
+                if all(order["operation"] == "RENDEZVOUS" for order in action["orders"]):
+                    quote = self.military.rendezvous_batch_quote(actor, action["orders"])
+                    errors = [e for row in quote["rows"] for e in row["errors"]] + quote["errors"]
+                    if errors:
+                        raise ActionRejected(errors[0]["code"], errors[0]["text"])
                 rows = []
                 for order in action["orders"]:
                     try:

@@ -846,6 +846,9 @@ class LiveSession:
             try:
                 action = validate_action(actor, {"type": "MILITARY", "operation": "DISPATCH",
                                                  "orders": payload.get("orders")}, state.config)
+                if all(order["operation"] == "RENDEZVOUS" for order in action["orders"]):
+                    quote = Military(state).rendezvous_batch_quote(actor, action["orders"])
+                    return {"ok": True, **quote}
                 targets = {(o["tile"]["col"], o["tile"]["row"]) for o in action["orders"]
                            if o["operation"] == "ATTACK" and o.get("tile")}
                 if len(targets) != 1 or not all(o["operation"] == "ATTACK" and o.get("tile")
