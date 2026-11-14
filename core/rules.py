@@ -365,6 +365,10 @@ class RuleEngine:
                 return self.military.recruit(
                     actor, action["unit"], action["strength"], action.get("army_id")
                 )
+            if operation == "RENDEZVOUS":
+                return self.military.rendezvous(
+                    actor, action["army_id"], action["host_id"], action["units"]
+                )
             if operation == "MARCH":
                 return self.military.march(
                     actor, (action["tile"]["col"], action["tile"]["row"]), action.get("army_id")

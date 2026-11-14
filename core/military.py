@@ -1,11 +1,12 @@
 """Strategic armies as unit rosters: recruitment, marching, battles, upkeep, exhaustion."""
 from __future__ import annotations
 
-from core.actions import ActionRejected
+from core.actions import ActionRejected, ActionResult
 from core.content import army_upkeep, field_cap
 from core.movement import Movement, march_days
 from core.society import stability_factor
 from core.state import (
+    ArmyState,
     GameState,
     MarchOrder,
     RECRUIT_STALL_QUIET,
@@ -17,6 +18,7 @@ from core.state import (
     siege_besiegers,
     siege_ledger,
     stall_label,
+    tile_army_capacity,
     tribute_base,
     tribute_transfers,
     unit_unlocked,
@@ -128,6 +130,8 @@ class Military:
             raise ActionRejected("INVALID_STRENGTH", f"单次招募规模为 1-{batch_max}")
         country = self.state.countries[actor]
         army = self._army_of(country, army_id)
+        if army and army.march and army.march.rendezvous:
+            raise ActionRejected("MARCH_IN_PROGRESS", "不能向会师途中的分队补兵")
         spec = self.units[unit_id]
         if not self.unlocked(country, unit_id):
             requirement = spec["required_technology"]
@@ -407,6 +411,9 @@ class Military:
                 if army is None:
                     self._stall(country, None, "NO_GARRISON", coord, wage)
                     continue
+                if not army.strength and coord in country.barracks_dispatches:
+                    self._stall(country, army, "NO_GARRISON", coord, wage)
+                    continue
                 if not army.recruiting:
                     self._stall(country, army, "PAUSED", coord, wage)
                     continue
@@ -485,6 +492,7 @@ class Military:
         army.march = MarchOrder(
             purpose=purpose, route=plan["route"], cumulative=plan["cumulative"],
             target=target, objective=objective, expedition=expedition,
+            issued_sequence=len(self.state.event_log) + 1,
         )
         route = plan["route"]
         self.state.record(
@@ -562,6 +570,197 @@ class Military:
                                float(self.movement_config["maximum_order_cost"])))
         return self._order(country, army, plan, "MARCH",
                            expedition=self._expedition(actor, plan, owners))
+
+    def rendezvous_capacity(self, country, tile, host=None) -> dict:
+        city = self._city_of(country, tile)
+        capital = city is not None and self.state.is_capital(country, city)
+        capacity = tile_army_capacity(country, self.state.config, capital=capital)
+        stationed = self._camps_of(country, tile)
+        if host is not None and host.march is not None:
+            # Preview the host's planned arrival, while keeping the slot shared
+            # with any other army already waiting there.
+            stationed.append(host)
+        used = sum(army.strength for army in stationed)
+        camp = country.buildings.get(tile) == "BARRACKS"
+        unit_room = {}
+        if camp:
+            for unit_id, spec in self.units.items():
+                limit = min(int(self.barracks["garrison_capacity"]), int(spec["max_count"]))
+                present = sum(army.units.get(unit_id, 0) for army in stationed)
+                unit_room[unit_id] = max(0, limit - present)
+        return {"capacity": capacity, "room": max(0, capacity - used),
+                "capital": capital, "unit_room": unit_room}
+
+    def rendezvous_hosts(self, actor: str) -> list[dict]:
+        country = self.state.countries[actor]
+        return [
+            {"army_id": army.army_id, "tile": self._tile(army.tile),
+             **self.rendezvous_capacity(country, army.tile)}
+            for army in country.armies
+            if army.march is None and army.tile is not None and army.strength
+        ]
+
+    def _rendezvous_errors(self, units: dict, source: dict, capacity: dict) -> list[dict]:
+        errors = []
+        for unit_id, count in units.items():
+            if not 0 <= count <= source.get(unit_id, 0):
+                errors.append({"code": "SOURCE_UNIT_LIMIT", "unit": unit_id,
+                               "text": f"{self.units[unit_id]['label']}：源军兵种名额到底"})
+        if sum(units.values()) > capacity["room"]:
+            errors.append({"code": "HOST_CAPACITY", "text": f"装不下，还能装 {capacity['room']} 支"})
+        for unit_id, room in capacity["unit_room"].items():
+            if units.get(unit_id, 0) > room:
+                errors.append({"code": "CAMP_UNIT_LIMIT", "unit": unit_id,
+                               "text": f"{self.units[unit_id]['label']}：宿主兵营同兵种名额已满（还能收 {room} 支）"})
+        if not errors and not sum(units.values()):
+            errors.append({"code": "EMPTY_DISPATCH", "text": "至少选择 1 支兵"})
+        return errors
+
+    def rendezvous_quote(self, actor: str, source_id: str, host_id: str, units: dict) -> dict:
+        country = self.state.countries[actor]
+        source, host = country.find_army(source_id), country.find_army(host_id)
+        if source is None or host is None or source is host or not host.strength:
+            raise ActionRejected("INVALID_RENDEZVOUS", "请选择两支不同的本国军队")
+        self._require_marchable(source)
+        if host.march and host.march.rendezvous:
+            raise ActionRejected("INVALID_RENDEZVOUS", "会师途中的分队不能担任宿主")
+        tile = host.march.destination if host.march else host.tile
+        if tile is None or not self._marchable(actor, tile, self._owners()):
+            raise ActionRejected("FOREIGN_GROUND", "会师目标格不可驻扎")
+        capacity = self.rendezvous_capacity(country, tile, host)
+        unit_limit = sum(min(count, capacity["unit_room"].get(unit, count))
+                         for unit, count in source.units.items())
+        errors = self._rendezvous_errors(units, source.units, capacity)
+        if not errors and source.tile != tile:
+            road = self._road(actor, source.tile, tile, explain=True)
+            if road["plan"] is None:
+                code, message = self._refusal(tile, road, self.movement_config["maximum_order_cost"])
+                errors.append({"code": code, "text": message})
+        return {
+            **capacity, "destination": self._tile(tile),
+            "source_strength": source.strength, "source_units": dict(source.units),
+            "source_labels": {u: self.units[u]["label"] for u in source.units},
+            "maximum": min(unit_limit, capacity["room"]),
+            "errors": errors,
+        }
+
+    def rendezvous(self, actor: str, source_id: str, host_id: str, units: dict) -> dict:
+        country = self.state.countries[actor]
+        quote = self.rendezvous_quote(actor, source_id, host_id, units)
+        if quote["errors"]:
+            error = quote["errors"][0]
+            raise ActionRejected(error["code"], error["text"])
+        source = country.find_army(source_id)
+        tile = (quote["destination"]["col"], quote["destination"]["row"])
+        if source.tile == tile:
+            plan = {"route": [tile], "cumulative": [0.0], "cost": 0.0, "days": 0}
+        else:
+            road = self._road(actor, source.tile, tile, explain=True)
+            plan = road["plan"]
+            if plan is None:
+                raise ActionRejected(*self._refusal(tile, road, self.movement_config["maximum_order_cost"]))
+        dispatched = {unit: count for unit, count in units.items() if count}
+        # An in-transit detachment uses the existing combat and march machinery.
+        # It receives a permanent army number only if it has to camp independently.
+        sequence = len(self.state.event_log) + 1
+        detachment = ArmyState(army_id=f"{source_id}~{sequence}", tile=source.tile, units=dispatched)
+        for unit, count in dispatched.items():
+            remaining = source.units[unit] - count
+            if remaining:
+                source.units[unit] = remaining
+            else:
+                del source.units[unit]
+        if not source.strength:
+            self._disband(country, source, "rendezvous_dispatch")
+            country.army_tombstones[source_id] = {
+                "day": self.state.day_index, "host_id": host_id,
+                "tile": self._tile(source.tile), "units": dispatched.copy(),
+                "recruiting": source.recruiting, "progress": source.progress,
+                "preferred_unit": source.preferred_unit, "reason": "RENDEZVOUS_DISPATCH",
+            }
+        country.armies.append(detachment)
+        result = self._order(country, detachment, plan, "RENDEZVOUS",
+                             expedition=self._expedition(actor, plan, self._owners()))
+        detachment.march.rendezvous = {
+            "source_id": source_id, "host_id": host_id, "origin": self._tile(source.tile),
+            "ordered_day": self.state.day_index,
+            "action_id": f"A{self.state.next_action_number - 1:08d}",
+        }
+        if country.buildings.get(source.tile) == "BARRACKS":
+            country.barracks_dispatches[source.tile] = {
+                "army_id": source_id, "host_id": host_id, "units": dispatched.copy(),
+                "remaining": source.strength, "progress": source.progress,
+                "day": self.state.day_index,
+            }
+        self.state.record("rendezvous_dispatched", country_id=actor, source_id=source_id,
+                          host_id=host_id, units=dispatched.copy(),
+                          remaining=source.strength, progress=source.progress)
+        if len(plan["route"]) == 1:
+            self._arrive(country, detachment, detachment.march)
+        return {**result, "source_id": source_id, "host_id": host_id}
+
+    def _finish_rendezvous(self, country, army, order, *, cancelled=False):
+        details = order.rendezvous
+        transit_id = army.army_id
+        tile = order.destination
+        owners = self._owners()
+        legal = self._marchable(country.country_id, tile, owners)
+        camps = [camp for camp in self._camps_of(country, tile) if camp is not army]
+        host = next((camp for camp in camps if camp.army_id == details["host_id"]), None)
+        # A preceding arrival may already have established the host here.
+        if camps and (host is None or host.arrival_day == self.state.day_index):
+            host = min(camps, key=lambda camp: (
+                camp.arrival_day, camp.arrival_sequence, camp.army_id,
+            ))
+        errors = []
+        if host is not None and legal and not cancelled:
+            army.march = order  # Exclude the incoming detachment from occupied capacity.
+            capacity = self.rendezvous_capacity(country, tile)
+            army.march = None
+            errors = self._rendezvous_errors(army.units, army.units, capacity)
+        merged = host is not None and legal and not cancelled and not errors
+        code = "RENDEZVOUS_MERGED"
+        reason = "会师完成"
+        if merged:
+            for unit, count in army.units.items():
+                host.units[unit] = host.units.get(unit, 0) + count
+            country.armies.remove(army)
+        elif army.strength:
+            code = "RENDEZVOUS_CAMPED"
+            reason = "会师未成、就地驻扎"
+            if cancelled or not legal:
+                legal_tiles = [point for point in reversed(order.route[:order.index+1])
+                               if self._marchable(country.country_id, point, owners)
+                               and not any(self._camps_of(self.state.countries[enemy], point)
+                                           for enemy in country.at_war_with if enemy in self.state.countries)]
+                # If borders moved across the entire route, fall back to friendly land.
+                army.tile = next(iter(legal_tiles), None)
+                if army.tile is None:
+                    army.tile = next(iter(country.tiles), None)
+                code = "RENDEZVOUS_LANDING_REFUSED"
+                reason = "会师未成：无法在目标格驻扎，已撤回可驻地"
+            country.army_serial += 1
+            army.army_id = f"{country.country_id}-A{country.army_serial}"
+            if errors:
+                reason += " · " + errors[0]["text"]
+        else:
+            if any(army is current for current in country.armies):
+                self._disband(country, army, "rendezvous_lost")
+            code, reason = "RENDEZVOUS_LOST", "会师途中已无剩余兵力"
+        operation = {"type": "MILITARY", "operation": "RENDEZVOUS",
+                     "army_id": details["source_id"], "host_id": details["host_id"],
+                     "tile": self._tile(tile)}
+        result = ActionResult(details["action_id"], country.country_id, "MILITARY",
+                              code in {"RENDEZVOUS_MERGED", "RENDEZVOUS_CAMPED"},
+                              code, reason, self.state.day_index)
+        if self.state.day_index > details["ordered_day"] or len(order.route) > 1:
+            self.state.add_receipt(result, operation)
+        self.state.record("army_arrived" if not cancelled else "march_cancelled",
+                          country_id=country.country_id, army_id=transit_id,
+                          purpose="RENDEZVOUS", tile=self._tile(army.tile), reason=reason)
+        self.state.record("rendezvous_arrived", country_id=country.country_id,
+                          source_id=details["source_id"], army_id=host.army_id if merged else army.army_id,
+                          reason=reason, code=code, tile=self._tile(army.tile))
 
     @staticmethod
     def _refusal(target, road: dict, cap: float) -> tuple[str, str]:
@@ -1802,7 +2001,7 @@ class Military:
             "armies": tally["armies"], "day": self.state.day_index,
         }
 
-    def _battle(self, attacker, defender, army, target_tile, expedition: bool) -> dict:
+    def _battle(self, attacker, defender, army, target_tile, expedition: bool, *, capture_ground=True) -> dict:
         biome = self.state.world.tile(target_tile)["biome"]
         equipment = 1 + (
             attacker.technology.get("bronze_metallurgy", 1)
@@ -1841,7 +2040,7 @@ class Military:
         # A border only moves where the defender actually holds the ground. A column caught
         # in the open — on nobody's soil, or parked on ours — loses the fight and nothing
         # else: there is no hex to seize, so the victory is paid for in soldiers alone.
-        seizes = target_tile in defender.tiles
+        seizes = capture_ground and target_tile in defender.tiles
         if won and seizes:
             defender.tiles.remove(target_tile)
             attacker.tiles.append(target_tile)
@@ -1940,8 +2139,13 @@ class Military:
         is standing there, which is what the 行军中敌土减速 rule promises.
         """
         budget = float(self.movement_config["daily_budget"])
-        for country in self.state.countries.values():
-            for army in country.armies:
+        for country in list(self.state.countries.values()):
+            ordered = sorted(country.armies, key=lambda army:
+                             (bool(army.march and army.march.rendezvous),
+                              army.march.issued_sequence if army.march else 0))
+            for army in ordered:
+                if not any(army is current for current in country.armies):
+                    continue
                 order = army.march
                 if order is None:
                     continue
@@ -1951,14 +2155,37 @@ class Military:
                 from_index = order.index
                 order.spent += budget
                 to_index = order.index
+                if order.rendezvous and self._intercept_rendezvous(
+                    country, army, order, from_index, to_index
+                ):
+                    continue
                 if to_index > from_index:
                     army.tile = order.route[to_index]
                 if to_index < len(order.route) - 1:
                     continue
                 self._arrive(country, army, order)
 
+    def _intercept_rendezvous(self, country, army, order, start, end) -> bool:
+        for tile in order.route[start+1:end+1]:
+            enemy = next((self.state.countries[enemy_id]
+                          for enemy_id in country.at_war_with
+                          if enemy_id in self.state.countries
+                          and self._camps_of(self.state.countries[enemy_id], tile)), None)
+            if enemy is None:
+                continue
+            army.tile = tile
+            army.march = None
+            self._battle(country, enemy, army, tile, order.expedition, capture_ground=False)
+            self._finish_rendezvous(country, army, order, cancelled=True)
+            return True
+        return False
+
     def _cancel_march(self, country, army, reason: str) -> None:
+        order = army.march
         army.march = None
+        if order and order.rendezvous:
+            self._finish_rendezvous(country, army, order, cancelled=True)
+            return
         self.state.record(
             "march_cancelled", country_id=country.country_id, army_id=army.army_id,
             reason=reason, tile=self._tile(army.tile),
@@ -1967,6 +2194,11 @@ class Military:
     def _arrive(self, country, army, order: MarchOrder) -> None:
         """The route is paid for: the army either camps on the far tile or gives battle."""
         army.march = None
+        army.arrival_day = self.state.day_index
+        army.arrival_sequence = order.issued_sequence
+        if order.rendezvous:
+            self._finish_rendezvous(country, army, order)
+            return
         defender = self.state.countries.get(order.target or "")
         objective = order.objective
         # The column fights on arrival if the realm it was ordered against still holds the

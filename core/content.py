@@ -197,6 +197,8 @@ def _validate_units(config: dict[str, Any], fields: list[str], max_level: int) -
 def _validate_military(config: dict[str, Any]) -> None:
     military = config["military"]
     _require(isinstance(military, dict), "military 必须是对象")
+    extra = military.get("capital_extra_capacity", 4)
+    _require(type(extra) is int and extra >= 0, "military.capital_extra_capacity 必须是非负整数")
     for key in MILITARY_NUMERIC:
         _require(key in military, f"military 缺少 {key}")
         _number(military[key], f"military.{key}")

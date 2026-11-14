@@ -177,7 +177,7 @@ class OpenAICompatibleAgent(CountryAgent):
             "SET_RESEARCH(field), SET_POLICY(priority), "
             "TRADE(operation,target,offer_food,request_treasury 或 operation,proposal_id), "
             "DIPLOMACY(GIFT/PROPOSE_PACT/ACCEPT_PACT/REJECT_PACT/DECLARE_WAR/PROPOSE_PEACE), "
-            "MILITARY(RECRUIT(unit,strength[,army_id])/MARCH(tile[,army_id])/ATTACK(target[,army_id][,tile])"
+            "MILITARY(RECRUIT(unit,strength[,army_id])/MARCH(tile[,army_id])/RENDEZVOUS(army_id,host_id,units)/ATTACK(target[,army_id][,tile])"
             "/SET_RECRUITING(army_id,recruiting)/SET_RECRUIT_UNIT(army_id,unit)), "
             "SET_CITY_FOCUS(city_id,focus), SET_CITY_ZONE(city_id,tile,zone), "
             "SET_CITY_BUDGET(city_id,austerity|balanced|investment), NO_OP。"

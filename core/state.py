@@ -209,6 +209,8 @@ class MarchOrder:
     objective: tuple[int, int] | None = None
     expedition: bool = False
     spent: float = 0.0
+    rendezvous: dict[str, Any] | None = None
+    issued_sequence: int = 0
 
     @property
     def destination(self) -> tuple[int, int] | None:
@@ -239,6 +241,8 @@ class MarchOrder:
             "route": [list(coord) for coord in self.route],
             "cumulative": [round(value, 4) for value in self.cumulative],
             "spent": round(self.spent, 4),
+            **({"issued_sequence": self.issued_sequence} if self.issued_sequence else {}),
+            **({"rendezvous": dict(self.rendezvous)} if self.rendezvous else {}),
         }
 
     @classmethod
@@ -253,6 +257,8 @@ class MarchOrder:
             objective=(int(objective[0]), int(objective[1])) if objective else None,
             expedition=bool(data.get("expedition", False)),
             spent=max(0.0, float(data.get("spent", 0.0) or 0.0)),
+            rendezvous=data.get("rendezvous"),
+            issued_sequence=int(data.get("issued_sequence", 0)),
         )
 
 
@@ -270,6 +276,8 @@ class ArmyState:
     stall: str = ""
     raised: int = 0
     stall_notices: dict[str, int] = field(default_factory=dict)
+    arrival_day: int = -1
+    arrival_sequence: int = 0
 
     @property
     def strength(self) -> int:
@@ -287,6 +295,8 @@ class ArmyState:
             "stall": self.stall,
             "raised": self.raised,
             "stall_notices": dict(self.stall_notices),
+            **({"arrival_day": self.arrival_day, "arrival_sequence": self.arrival_sequence}
+               if self.arrival_day >= 0 else {}),
         }
 
     @classmethod
@@ -302,6 +312,8 @@ class ArmyState:
             march=MarchOrder.from_dict(payload) if payload else None,
             stall=str(data.get("stall", "") or ""),
             raised=max(0, int(data.get("raised", 0) or 0)),
+            arrival_day=int(data.get("arrival_day", -1)),
+            arrival_sequence=int(data.get("arrival_sequence", 0)),
             stall_notices={str(code): int(day)
                            for code, day in (data.get("stall_notices") or {}).items()},
         )
@@ -324,6 +336,13 @@ def march_payload(order: MarchOrder | None, config: dict[str, Any]) -> dict[str,
         "route": [list(coord) for coord in order.route],
         "index": order.index,
     }
+
+
+def tile_army_capacity(country: "CountryState", config: dict[str, Any], *, capital: bool) -> int:
+    rules = config["military"]
+    camps = sum(building == "BARRACKS" for building in country.buildings.values())
+    per_camp = int(rules["barracks"]["garrison_capacity"])
+    return camps * per_camp + (int(rules.get("capital_extra_capacity", 4)) if capital else 0)
 
 
 def army_payload(army: ArmyState, country: "CountryState",
@@ -413,7 +432,7 @@ def recruit_stall(country: "CountryState", army: ArmyState, unit_id: str,
 def camp_garrison(country: "CountryState", tile: tuple[int, int],
                   config: dict[str, Any]) -> ArmyState | None:
     """The one army a camp draws its wage for: the first here that is recruiting."""
-    standing = [army for army in country.armies if army.tile == tile]
+    standing = [army for army in country.armies if army.tile == tile and not (army.march and army.march.rendezvous)]
     for army in standing:
         if army.recruiting:
             return army
@@ -430,12 +449,15 @@ def barracks_report(country: "CountryState", tile: tuple[int, int],
     spec = config["units"][unit_id]
     price = float(spec["cost"]["treasury"])
     progress = 0.0 if army is None else army.progress
-    stall = "NO_GARRISON" if army is None else recruit_stall(country, army, unit_id, config)
+    stall = ("NO_GARRISON" if army is None or (not army.strength and tile in country.barracks_dispatches)
+             else recruit_stall(country, army, unit_id, config))
     waiting = max(0.0, price - progress)
     days_left = None if stall else (0 if waiting <= 1e-9 else (
         math.ceil(waiting / wage) if wage > 0 else None))
+    last_dispatch = country.barracks_dispatches.get(tile)
     return {
         "tile": [tile[0], tile[1]],
+        **({"last_dispatch": last_dispatch} if last_dispatch else {}),
         "army_id": army.army_id if army else None,
         "recruiting": bool(army and army.recruiting),
         "unit": unit_id,
@@ -771,6 +793,8 @@ class CountryState:
     stability: float = 60.0
     armies: list[ArmyState] = field(default_factory=list)
     army_serial: int = 0
+    army_tombstones: dict[str, Any] = field(default_factory=dict)
+    barracks_dispatches: dict[tuple[int, int], dict] = field(default_factory=dict)
     at_war_with: list[str] = field(default_factory=list)
     war_exhaustion: float = 0.0
     levies: list[dict[str, Any]] = field(default_factory=list)
@@ -843,6 +867,9 @@ class CountryState:
             "stability": self.stability,
             "armies": [army.to_dict() for army in self.armies],
             "army_serial": self.army_serial,
+            **({"barracks_dispatches": [[list(tile), row] for tile, row in self.barracks_dispatches.items()]}
+               if self.barracks_dispatches else {}),
+            **({"army_tombstones": self.army_tombstones} if self.army_tombstones else {}),
             "army_units": self.army_units,
             "army_strength": self.army_strength,
             "army_position": list(self.army_position) if self.army_position else None,
@@ -882,6 +909,8 @@ class CountryState:
             stability=float(data.get("stability", 60.0)),
             armies=armies,
             army_serial=int(data.get("army_serial", len(armies)) or 0),
+            army_tombstones=dict(data.get("army_tombstones") or {}),
+            barracks_dispatches={tuple(tile): row for tile, row in data.get("barracks_dispatches", [])},
             at_war_with=list(data.get("at_war_with", [])),
             war_exhaustion=float(data.get("war_exhaustion", 0.0)),
             levies=[dict(levy) for levy in data.get("levies", [])],
@@ -1275,6 +1304,10 @@ class GameState:
                             **city_static_metrics(city, country, self.world, self.config),
                             # The same ledger the daily settlement advances, so a city card and
                             # a march panel quote one fall date rather than two guesses.
+                            "capital": self.is_capital(country, city),
+                            "military_capacity": tile_army_capacity(
+                                country, self.config, capital=self.is_capital(country, city)
+                            ),
                             "siege": siege_ledger(self.countries, country, city, self.config),
                         }
                         for city in country.cities
@@ -1284,6 +1317,7 @@ class GameState:
                     "stability_factor": round(stability_factor(country.stability, self.config), 4),
                     "army_strength": country.army_strength,
                     "army_cap": field_cap(country.buildings.values(), self.config),
+                    "army_tombstones": dict(country.army_tombstones),
                     "army_units": dict(country.army_units),
                     "army_power": round(roster_value(country.army_units, self.config), 3),
                     "army_position": list(country.army_position) if country.army_position else None,

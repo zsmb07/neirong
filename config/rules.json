@@ -675,6 +675,7 @@
   "building_upkeep_per_day": 0.004,
   "military": {
     "maximum_strength": 12,
+    "capital_extra_capacity": 4,
     "recruit_batch_max": 4,
     "default_unit": "MILITIA",
     "attacker_loss_rate": 0.32,

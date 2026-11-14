@@ -224,6 +224,8 @@ HTTP 接口：
 
 - **兵营数量不再封顶**：`buildings.BARRACKS` 删掉 `max_per_country`，同一国连建 5 座、9 座都收；工坊等真正的唯一性建筑仍回报 `BUILDING_UNIQUE_LIMIT`，说明放开的是兵营而不是整张表。
 - **每营定额固定**：一座在营兵营每天只练 `military.barracks.garrison_capacity`（4）支，练满就停工——进度停在 `price × progress_cap_ratio` 并回报 `GARRISON_LIMIT`，不会空烧军饷；全国到顶则回报 `ARMY_LIMIT`。
+- **会师容量**：已建成兵营数 × 4；都城中心再固定加 4。两座营时普通格 8、都城 12，同一格多支驻军共用一个上限。兵营还按兵种检查本营名额。
+- **会师派兵**：军事栏选源军和宿主，点「会师」，逐兵种调整数量。弹窗同时显示源军总兵力、目标剩余容量和最多可派数。只在确认时下令，抵达再按当时的容量结算。没有派走的兵和募兵进度留在原军，派空时保留墓碑。
 - **上限随营数走**：`core/content.py::field_cap` = `max(maximum_strength, 在营兵营数 × garrison_capacity)`，即保底 12 支、4 座营 16 支、9 座营 36 支。同一个函数被 `state.summary()` 的 `army_cap` 与 `build_observation()` 共用，面板、AI、结算看到的是同一个数。
 - **集结进结算**：`Military._mass` 按 `military.mass_radius`（1）格统计到场军队（在途的不算，下这道命令的那支抵达当日也不算在途），战力系数 = `minimum_mass_share` 保底 0.5 +（1 − 0.5）× 在场战力 / 全国战力；攻守双方同式，谁没到场谁贴保底。战损按 `_bleed_order` 先从在场军队扣，扣完再补后备，且不引入随机数。
 - **报价先给集结**：`strike_options` 每条路线带 `mass` / `mass_share`，排序改成 `(days, -mass, army_id)`——同样快的两条里，先把兵聚齐的那条排前面；打不到的国家直接 `reachable=false, mass=0, mass_share=null`，不再给一个假系数。

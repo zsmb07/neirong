@@ -19,6 +19,7 @@ import statistics
 
 from agents.personality import PERSONALITIES
 from core.simulation import Simulation
+from core.rules import RuleEngine
 from core.state import DEFAULT_RULES, GameState
 from mapgen import generate_fair_world
 
@@ -31,6 +32,8 @@ DAYS = 3650
 START_ERA = -799
 PERSONALITY_ORDER = ("aggressive", "neutral", "conservative")
 LABELS = {
+    "rendezvous_control": "同配置不派兵",
+    "rendezvous": "都城会师派兵",
     "appetite": "默认筑路偏好",
     "no_paving": "无人筑路",
     "everyone_paves": "全国筑路",
@@ -53,6 +56,8 @@ COUNTRIES = [
     {"name": "国家F", "color": "#d6a36f", "archetype": "river_valley", "population": 20000},
 ]
 SCENARIOS = [
+    {"name": "rendezvous_control", "rendezvous_setup": True},
+    {"name": "rendezvous", "rendezvous_setup": True, "dispatch": True},
     {"name": "appetite"},
     {"name": "no_paving", "roads": {"aggressive": 0, "neutral": 0, "conservative": 0}},
     {"name": "everyone_paves",
@@ -157,6 +162,29 @@ def peace_gaps(events: list[dict]) -> list[int]:
     return gaps
 
 
+def seed_rendezvous_trial(state, country_ids, dispatch):
+    """Give both arms of the comparison identical camps and starting rosters."""
+    engine = RuleEngine(state)
+    for country_id in country_ids:
+        country = state.countries[country_id]
+        capital = state.capital_center(country_id)
+        camps = [tile for tile in state.world.neighbors(*capital) if tile in country.tiles][:2]
+        if len(camps) < 2:
+            continue
+        country.buildings.update({tile: "BARRACKS" for tile in camps})
+        country.armies.clear()
+        host = country.new_army(capital, {"MILITIA": 2})
+        source = country.new_army(camps[0], {"MILITIA": 3, "ARCHER": 2})
+        if dispatch:
+            result = engine.apply_action(country_id, {
+                "type": "MILITARY", "operation": "RENDEZVOUS",
+                "army_id": source.army_id, "host_id": host.army_id,
+                "units": {"MILITIA": 2, "ARCHER": 1},
+            })
+            if not result.accepted:
+                raise RuntimeError(result.reason_text)
+
+
 def run_one(seed: int, assignment: list[str], scenario: dict) -> dict:
     """One world, one parameter set, one Mock-controlled campaign."""
     world, world_path = generate_fair_world(COUNTRIES, base_seed=seed, attempts=10)
@@ -184,6 +212,8 @@ def run_one(seed: int, assignment: list[str], scenario: dict) -> dict:
         mapping = dict(zip(country_ids, assignment))
         for country_id, personality in mapping.items():
             simulation.state.countries[country_id].personality = personality
+        if scenario.get("rendezvous_setup"):
+            seed_rendezvous_trial(state, country_ids, scenario.get("dispatch", False))
         completed = simulation.run(scenario.get("days", DAYS), force=True)
         events = simulation.state.event_log
         summary = simulation.state.summary()
@@ -692,12 +722,17 @@ def column_lines(agg: dict) -> list[str]:
 
 
 def main() -> int:
+    global OUT, REPORT
     parser = argparse.ArgumentParser(description="Run the march balance experiment")
     parser.add_argument("--seeds", type=int, nargs="*", default=SEEDS)
     parser.add_argument("--scenarios", nargs="*", default=None,
                         help="scenario names to run; defaults to all")
+    parser.add_argument("--output", type=Path, help="write report and results to this directory")
     parser.add_argument("--days", type=int, default=DAYS)
     arguments = parser.parse_args()
+    if arguments.output:
+        OUT = arguments.output
+        REPORT = OUT / "MARCH_BALANCE_REPORT.md"
     scenarios = SCENARIOS
     if arguments.scenarios:
         wanted = set(arguments.scenarios)

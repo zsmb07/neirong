@@ -27,6 +27,7 @@ from agents.personality import normalize_personality, personality_definition, pe
 from agents.providers import provider_payload, resolve_simple_settings
 from agents.scheduler import AgentScheduler
 from core.messages import compose_ruler_messages, record_ruler_messages
+from core.actions import ActionRejected, validate_action
 from core.military import Military
 from core.simulation import Simulation
 
@@ -836,6 +837,24 @@ class LiveSession:
             return {}
         return Military(self.simulation.state).strike_options(seat)
 
+    def rendezvous_preview(self, payload: dict) -> dict:
+        with self.lock:
+            actor = self.seat()
+            if actor is None:
+                return {"ok": False, "error": "请先接管一个国家"}
+            state = self.simulation.state
+            raw = {"type": "MILITARY", "operation": "RENDEZVOUS",
+                   "army_id": payload.get("army_id"), "host_id": payload.get("host_id"),
+                   "units": payload.get("units", {})}
+            try:
+                action = validate_action(actor, raw, state.config)
+                quote = Military(state).rendezvous_quote(
+                    actor, action["army_id"], action["host_id"], action["units"]
+                )
+            except ActionRejected as error:
+                return {"ok": False, "error": str(error)}
+            return {"ok": True, "quote": quote}
+
     def tile_strikes(self, col: int, row: int) -> dict:
         """Who stands on one tile and what each of my armies would pay to take it.
 
@@ -901,6 +920,8 @@ class LiveSession:
                 "building_specs": self.simulation.state.config["buildings"],
                 "unit_specs": self.simulation.state.config["units"],
                 "military_specs": self.simulation.state.config["military"],
+                "rendezvous_hosts": (Military(self.simulation.state).rendezvous_hosts(self.seat())
+                                     if self.seat() else []),
                 "movement_specs": self.simulation.state.config["movement"],
                 "campaign_quotes": self.campaign_quotes(),
                 "incoming_threats": threats,
@@ -1041,7 +1062,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path not in {
             "/api/control", "/api/action", "/api/agents", "/api/agents/test",
             "/api/agents/budget", "/api/agents/personality", "/api/new_game", "/api/saves",
-            "/api/map_preview", "/api/march_preview",
+            "/api/map_preview", "/api/march_preview", "/api/rendezvous_preview",
         }:
             self._json({"error": "not found"}, 404)
             return
@@ -1084,6 +1105,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             elif self.path == "/api/map_preview":
                 result = self.session.map_preview(payload.get("draft") or {})
+            elif self.path == "/api/rendezvous_preview":
+                result = self.session.rendezvous_preview(payload)
             elif self.path == "/api/march_preview":
                 result = self.session.march_preview(
                     payload.get("draft") or {}, payload.get("from"), payload.get("to")

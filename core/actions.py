@@ -89,7 +89,7 @@ def validate_action(actor: str, raw: Any, config: dict[str, Any]) -> dict[str, A
     _keys(raw, {"type", "tile", "building", "agriculture", "mining", "construction",
                 "rate", "field", "priority", "operation", "target", "offer_food",
                 "request_treasury", "proposal_id", "amount", "pact", "strength", "unit",
-                "focus", "city_id", "zone", "managed_by", "budget", "army_id", "recruiting"})
+                "focus", "city_id", "zone", "managed_by", "budget", "army_id", "recruiting", "host_id", "units"})
 
     if action_type == "NO_OP":
         _keys(raw, {"type"})
@@ -161,11 +161,21 @@ def validate_action(actor: str, raw: Any, config: dict[str, Any]) -> dict[str, A
         return {"type": action_type, "city_id": city_id, "budget": budget}
     if action_type == "MILITARY":
         _keys(raw, {"type", "operation", "tile", "strength", "target", "unit",
-                    "army_id", "recruiting"})
+                    "army_id", "recruiting", "host_id", "units"})
         operation = raw.get("operation")
         army_id = raw.get("army_id")
         if army_id is not None and (not isinstance(army_id, str) or not army_id):
             raise ActionRejected("INVALID_PARAMETER", "army_id 必须是非空字符串或省略")
+        if operation == "RENDEZVOUS":
+            _keys(raw, {"type", "operation", "army_id", "host_id", "units"})
+            host = raw.get("host_id")
+            units = raw.get("units")
+            if not army_id or not isinstance(host, str) or not host or not isinstance(units, dict):
+                raise ActionRejected("INVALID_PARAMETER", "会师需要源军、宿主和兵种数量")
+            if set(units) - config["units"].keys():
+                raise ActionRejected("INVALID_PARAMETER", "会师包含未知兵种")
+            return {"type": action_type, "operation": operation, "army_id": army_id,
+                    "host_id": host, "units": {k: _integer(v, k) for k, v in units.items()}}
         if operation == "ATTACK":
             _keys(raw, {"type", "operation", "target", "army_id", "tile"})
             target = raw.get("target")

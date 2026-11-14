@@ -19,6 +19,7 @@ from core.society import (
 )
 from core.state import (
     army_payload,
+    tile_army_capacity,
     barracks_reports,
     diplomacy_ledger,
     recruit_options,
@@ -141,6 +142,7 @@ def build_observation(state, country_id: str) -> dict[str, Any]:
             "army_cap": field_cap(country.buildings.values(), state.config),
             "army_units": dict(country.army_units),
             "army_position": list(country.army_position) if country.army_position else None,
+            "rendezvous_hosts": Military(state).rendezvous_hosts(country_id),
             "armies": [army_payload(army, country, state.config) for army in country.armies],
             "barracks": barracks_reports(country, state.config),
             "recruit_options": recruit_options(country, state.config),
@@ -154,6 +156,9 @@ def build_observation(state, country_id: str) -> dict[str, Any]:
                     "siege": siege_ledger(state.countries, country, city, state.config),
                     # Which wall is the seat: its fall is the whole realm, not one more town.
                     "capital": state.is_capital(country, city),
+                    "military_capacity": tile_army_capacity(
+                        country, state.config, capital=state.is_capital(country, city)
+                    ),
                 }
                 for city in country.cities
             ],

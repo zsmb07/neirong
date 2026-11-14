@@ -1735,6 +1735,12 @@ siege(city_id/name/center/attacker/defender/open/armies/garrison/walls/attack_po
 
 ### 19.4 验证用数值
 
+- 会师驻格容量由引擎统一给出：普通格 = 本国已建成兵营数 × 4；都城中心格额外加 `military.capital_extra_capacity = 4`，即固定一营的容量，与兵营数无关。同格所有本国驻军共用这一个容量；兵营还分别按 `min(营内定额, 兵种上限)` 检查每种兵。全国编制及日常募兵闸门继续各自结算。
+- `MILITARY/RENDEZVOUS` 提交 `army_id`、`host_id` 和 `units`。`POST /api/rendezvous_preview` 接收同样的三个字段，返回两侧人数、可派上限和分项错误。预览不会下令。只在确认时下达行军，抵达按同日下令顺序重新核算；已驻军优先，先到先装。目标无人或装不下时按合法落点驻扎，目标已不能驻扎则以专用回执码记录撤回。会师分队仅在确实需要独立驻扎时取得正式番号。
+- 留队保留原番号、坐标和募兵账；派空则保留 `army_tombstones`。兵营报告的 `last_dispatch` 记录来源、去向、派出兵种、剩余兵力和原进度。会师分队为在途兵力，不进入驻军或围城计数；抵达后使用实时兵力。
+- 平衡对照：`python run_march_balance.py --seeds 2000 2001 --scenarios rendezvous_control rendezvous --days 365 --output <目录>`。两组各 2 局，初始地图、营和兵力相同。初测对照组会战 32 次、会师组 2 次，两组均无超程命令。样本显示集中兵力可能减少开战后的实际交锋，暂不外推长期平衡。
+
+
 - 世界：72×54，3,888 格；2,703 陆地；1,185 海洋；289 河流格。
 - 默认四国：ELAR / MARIS / VAYR / SAHAR。
 - 默认新城：目标 5 格城域（地形/相邻无主陆地不足时可能更少）。
